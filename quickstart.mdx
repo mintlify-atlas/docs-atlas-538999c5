@@ -1,80 +1,155 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quick Start"
+description: "Get started with IHP in minutes by creating your first application"
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide will get you up and running with IHP in just a few minutes. You'll create a new project, start the development server, and see your first Haskell web application in action.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  Before starting, make sure you've completed the [installation guide](/installation).
 </Note>
+
+## Create Your First Project
+
+<Steps>
+  <Step title="Create a New Project">
+    Use the `ihp-new` command to create a new project:
+    
+    ```bash
+    ihp-new my-app
+    ```
+    
+    This creates a new directory called `my-app` with all the files and structure needed for an IHP application.
+    
+    <Warning>
+      **Windows Users:** Make sure you're in the Linux part of the filesystem (not on a path starting with `/mnt/`), otherwise PostgreSQL will have issues accessing the database.
+    </Warning>
+  </Step>
+  
+  <Step title="Navigate to Your Project">
+    ```bash
+    cd my-app
+    ```
+  </Step>
+  
+  <Step title="Start the Development Server">
+    ```bash
+    devenv up
+    ```
+    
+    The development server will:
+    - Start a PostgreSQL database
+    - Launch the web application
+    - Start a WebSocket server for live reloading
+    - Open the built-in IDE
+    
+    <Note>
+      The very first time you start the server might take a while and may require a restart. If needed, press `CTRL+C` and run `devenv up` again.
+    </Note>
+  </Step>
+  
+  <Step title="Open Your Application">
+    By default, your application is available at:
+    
+    - **App:** [http://localhost:8000](http://localhost:8000)
+    - **Development Tools:** [http://localhost:8001](http://localhost:8001)
+    
+    <Note>
+      If ports 8000 and 8001 are already in use, IHP will automatically pick the next available ports (e.g., 8002 and 8003).
+    </Note>
+  </Step>
+</Steps>
+
+## Your First Code Change
+
+Let's experience IHP's live reloading by making a simple change:
+
+<Steps>
+  <Step title="Open the Welcome View">
+    Open `Web/View/Static/Welcome.hs` in your text editor.
+  </Step>
+  
+  <Step title="Edit the HTML">
+    Find the line with `It's working!` and replace it with:
+    
+    ```haskell
+    Hello World from Haskell!
+    ```
+  </Step>
+  
+  <Step title="Watch the Magic">
+    Save the file and watch your browser automatically refresh with the changes!
+    
+    <Note>
+      The auto-refresh uses a diff-based approach with morphdom, so it won't reset your page state.
+    </Note>
+  </Step>
+</Steps>
+
+## Project Structure
+
+Here's what `ihp-new` created for you:
+
+| File/Directory | Purpose |
+|----------------|----------|
+| `Application/` | Your domain logic lives here |
+| `Application/Schema.sql` | Database schema and tables |
+| `Web/Controller/` | Web application controllers |
+| `Web/View/` | HTML template files |
+| `Web/Types.hs` | Central place for web application types |
+| `Config/` | Framework and application configuration |
+| `static/` | Images, CSS, and JavaScript files |
+| `flake.nix` | Declares app dependencies (like `package.json` for NPM) |
+| `.ghci` | Config for the Haskell interpreter |
+
+## What's Running?
+
+The development server automatically manages:
+
+- **PostgreSQL Database**: No manual setup needed
+- **Web Server**: Serves your application
+- **WebSocket Server**: Powers live reloading
+- **Development Tools**: Code generators, schema designer, and logs
+
+<Note>
+  To stop the server, press `CTRL+C`
+</Note>
+
+## Next Steps
+
+Now that you have IHP running, you're ready to build something real:
+
+<CardGroup cols={2}>
+  <Card title="Build Your First Project" icon="book" href="/your-first-project">
+    Follow the complete tutorial to build a blog application with posts and comments
+  </Card>
+  
+  <Card title="Explore the Schema Designer" icon="database" href="http://localhost:8001/Tables">
+    Design your database schema with a visual interface
+  </Card>
+  
+  <Card title="Use Code Generators" icon="code" href="http://localhost:8001/Generators">
+    Generate controllers, views, and actions automatically
+  </Card>
+  
+  <Card title="View Application Logs" icon="file-lines" href="http://localhost:8001/AppLogs">
+    Monitor SQL queries and application logs in real-time
+  </Card>
+</CardGroup>
+
+## Tips
+
+- Place your text editor and browser side-by-side to see live reloading in action
+- The development server shows helpful error messages when things go wrong
+- IHP is built by terminal hackers - everything can be done from the command line if you prefer
+- Changes to Haskell files are usually reflected in less than 50ms
+
+## Getting Help
+
+If you run into any issues:
+
+- Check the [troubleshooting guide](https://ihp.digitallyinduced.com/Guide/troubleshooting.html)
+- Join the [IHP Slack community](https://ihp.digitallyinduced.com/Slack)
+- Ask questions in the community - we're happy to help!

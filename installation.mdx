@@ -1,0 +1,117 @@
+---
+title: "Installation"
+description: "Install IHP and set up your development environment with Nix"
+---
+
+# Installing IHP
+
+IHP uses the Nix package manager to manage all dependencies of your application. This guide will walk you through installing Nix, IHP, and setting up your development environment.
+
+<Note>
+  The first time you set up IHP, installation might take 10-15 minutes. Subsequent projects will be much faster as packages are cached.
+</Note>
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install Nix Package Manager">
+    IHP uses the Nix package manager to manage dependencies like PostgreSQL and the Haskell compiler.
+    
+    We recommend using the [Determinate Nix Installer](https://docs.determinate.systems/):
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+    ```
+    
+    Determinate Nix comes with Flakes and lazy-trees enabled by default, so no additional configuration is needed.
+    
+    <Note>
+      Nix is the equivalent of `npm` for JavaScript, but for Haskell and much more. It manages all your application dependencies in development and production.
+    </Note>
+  </Step>
+  
+  <Step title="Install IHP">
+    Once Nix is installed, you can install IHP:
+    
+    ```bash
+    nix profile install nixpkgs#ihp-new
+    ```
+    
+    This installs the `ihp-new` command which you'll use to create new IHP projects.
+  </Step>
+  
+  <Step title="Install direnv">
+    IHP uses [direnv](https://direnv.net/) to automatically load environment variables from `.env` files:
+    
+    ```bash
+    nix profile install nixpkgs#direnv
+    ```
+    
+    Next, enable `direnv` in your shell by following the instructions from the [direnv website](https://direnv.net/docs/hook.html).
+    
+    <Warning>
+      If you're using VS Code, make sure to install the direnv extension. Without it, your editor won't have access to the development environment.
+    </Warning>
+  </Step>
+  
+  <Step title="Set Up Your Editor">
+    Configure your editor for the best IHP development experience:
+    
+    <Tabs>
+      <Tab title="VS Code">
+        **Required Extensions:**
+        - direnv extension (essential for environment loading)
+        - Haskell extension (for syntax highlighting and language support)
+        
+        [See VS Code setup guide](https://ihp.digitallyinduced.com/Guide/editors.html#using-ihp-with-visual-studio-code-vscode)
+      </Tab>
+      
+      <Tab title="Sublime Text">
+        [See Sublime Text setup guide](https://ihp.digitallyinduced.com/Guide/editors.html#using-ihp-with-sublime-text)
+      </Tab>
+      
+      <Tab title="Emacs">
+        [See Emacs setup guide](https://ihp.digitallyinduced.com/Guide/editors.html#using-ihp-with-emacs)
+      </Tab>
+      
+      <Tab title="Vim / NeoVim">
+        [See Vim/NeoVim setup guide](https://ihp.digitallyinduced.com/Guide/editors.html#using-ihp-with-vim-neovim)
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## What Is Nix?
+
+While the installation is running, take a look at ["What Is Nix"](https://shopify.engineering/what-is-nix) by Shopify to understand how Nix works.
+
+Nix ensures that:
+- All dependencies are available in development and production
+- Your development environment is reproducible
+- Team members have identical setups
+- PostgreSQL and other services are automatically managed
+
+## Troubleshooting
+
+If you encounter any errors during installation:
+
+- Check the [troubleshooting section](https://ihp.digitallyinduced.com/Guide/troubleshooting.html) for quick solutions
+- Join the [IHP Slack community](https://ihp.digitallyinduced.com/Slack) for help
+
+## Using Cachix (Recommended)
+
+If you don't already use cachix, you may be prompted to install it during your first project setup. While not required, cachix is highly recommended as it dramatically reduces build times by providing pre-built binaries.
+
+Learn more about cachix at [cachix.org](https://cachix.org/).
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="play" href="/quickstart">
+    Create your first IHP application
+  </Card>
+  
+  <Card title="Your First Project" icon="book" href="/your-first-project">
+    Follow the complete tutorial to build a blog
+  </Card>
+</CardGroup>

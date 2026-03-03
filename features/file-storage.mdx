@@ -1,0 +1,304 @@
+---
+title: File Storage
+description: Upload and manage files in IHP with support for local storage, AWS S3, MinIO, and other S3-compatible services
+---
+
+IHP provides a simple file storage system for uploading files to local directories, Amazon S3, or any S3-compatible cloud service.
+
+<Note>
+All uploaded files get a random UUID as their filename for security. This prevents malicious filenames and makes URLs unguessable.
+</Note>
+
+## Configuration
+
+### Static Directory Storage
+
+For development, store files in your `static/` directory:
+
+```haskell
+-- Config/Config.hs
+import IHP.FileStorage.Config
+
+config :: ConfigBuilder
+config = do
+    option Development
+    option (AppHostname "localhost")
+    initStaticDirStorage
+```
+
+<Warning>
+Files in `static/` are publicly accessible. For production, use S3 or MinIO with private buckets.
+</Warning>
+
+### AWS S3
+
+```haskell
+-- Config/Config.hs
+import IHP.FileStorage.Config
+
+config :: ConfigBuilder
+config = do
+    option Development
+    option (AppHostname "localhost")
+    initS3Storage "eu-central-1" "my-bucket-name"
+```
+
+Set credentials via environment variables in `.envrc`:
+
+```bash
+export AWS_ACCESS_KEY_ID="YOUR_KEY"
+export AWS_SECRET_ACCESS_KEY="YOUR_SECRET"
+```
+
+### MinIO
+
+Enable MinIO in `flake.nix`:
+
+```nix
+devenv.shells.default = {
+    services.minio = {
+        enable = true;
+        buckets = [ "ihp-bucket" ];
+    };
+};
+```
+
+Configure in `Config/Config.hs`:
+
+```haskell
+import IHP.FileStorage.Config
+
+config :: ConfigBuilder
+config = do
+    initMinioStorage "http://127.0.0.1:9000" "ihp-bucket"
+```
+
+Set credentials in `.envrc`:
+
+```bash
+export MINIO_ACCESS_KEY="minioadmin"
+export MINIO_SECRET_KEY="minioadmin"
+```
+
+## Uploading Files
+
+### Basic Upload
+
+Given this schema:
+
+```sql
+CREATE TABLE companies (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    logo_url TEXT DEFAULT NULL
+);
+```
+
+Upload a file in your controller:
+
+```haskell
+action UpdateCompanyAction { companyId } = do
+    company <- fetch companyId
+    company
+        |> buildCompany
+        |> uploadToStorage #logoUrl
+        >>= ifValid \case
+            Left company -> render EditView { .. }
+            Right company -> do
+                company <- company |> updateRecord
+                redirectTo EditCompanyAction { .. }
+
+buildCompany company = company
+    |> fill @["name"]
+    |> validateField #name nonEmpty
+```
+
+<Note>
+After `uploadToStorage`, use `>>=` instead of `|>` for function chaining.
+</Note>
+
+### File Upload Form
+
+Add a file field to your form:
+
+```haskell
+renderForm :: Company -> Html
+renderForm company = formFor company [hsx|
+    {(textField #name)}
+    {(fileField #logoUrl)}
+    {submitButton}
+|]
+```
+
+With custom attributes:
+
+```haskell
+{(fileField #logoUrl) { additionalAttributes = [("accept", "image/*")] }}
+```
+
+### Image Preview
+
+Show a preview of the uploaded image:
+
+```haskell
+renderForm :: Company -> Html
+renderForm company = formFor company [hsx|
+    {(textField #name)}
+    {(fileField #logoUrl) { 
+        additionalAttributes = [
+            ("accept", "image/*"), 
+            ("data-preview", "#logoUrlPreview")
+        ] 
+    }}
+    <img id="logoUrlPreview" src={fromMaybe "" company.logoUrl}/>
+    {submitButton}
+|]
+```
+
+## Image Processing
+
+Use ImageMagick to resize and optimize images:
+
+```haskell
+action UpdateCompanyAction { companyId } = do
+    let uploadLogo = uploadToStorageWithOptions $ def
+            { preprocess = applyImageMagick "png" [
+                "-resize", "512x512^", 
+                "-gravity", "north", 
+                "-extent", "512x512", 
+                "-quality", "100%", 
+                "-strip"
+            ]}
+
+    company <- fetch companyId
+    company
+        |> fill @["name"]
+        |> uploadLogo #logoUrl
+        >>= ifValid \case
+            Left company -> render EditView { .. }
+            Right company -> do
+                company <- company |> updateRecord
+                redirectTo EditCompanyAction { .. }
+```
+
+### Installing ImageMagick
+
+Add to `default.nix`:
+
+```nix
+otherDeps = p: with p; [
+    imagemagick
+];
+```
+
+Restart your development server after running `devenv up`.
+
+### JPEG Compression
+
+```haskell
+let uploadLogo = uploadToStorageWithOptions $ def
+    { preprocess = applyImageMagick "jpg" [
+        "-resize", "1024x1024^",
+        "-gravity", "north",
+        "-extent", "1024x1024",
+        "-quality", "85%",
+        "-strip"
+    ]}
+```
+
+## Advanced Features
+
+### Upload Without a Record
+
+Use `storeFile` to upload without associating to a model:
+
+```haskell
+action UpdateLogoAction = do
+    let file = fileOrNothing "logo"
+            |> fromMaybe (error "No file given")
+    
+    storedFile <- storeFile file "logos"
+    let url = storedFile.url
+```
+
+### Required File Uploads
+
+Validate that a file was uploaded:
+
+```haskell
+action CreateCompanyAction = do
+    let company = newRecord @Company
+    company
+        |> uploadToStorage #logoUrl
+        >>= buildCompany
+        >>= ifValid \case
+            Left company -> render NewView { .. }
+            Right company -> do
+                company <- company |> createRecord
+                redirectTo ShowCompanyAction { .. }
+
+buildCompany company = company
+    |> fill @["name"]
+    |> validateField #name nonEmpty
+    |> validateField #logoUrl nonEmpty
+    |> pure
+```
+
+### Content Disposition
+
+Force downloads with proper filenames:
+
+```haskell
+let uploadAttachment = uploadToStorageWithOptions $ def
+    { contentDisposition = contentDispositionAttachmentAndFileName }
+
+record
+    |> uploadAttachment #attachmentUrl
+```
+
+This sets the header:
+
+```
+Content-Disposition: attachment; filename="the-filename-when-uploaded.pdf"
+```
+
+### Signed URLs for Private Files
+
+Generate temporary download URLs for S3 files:
+
+```haskell
+signedUrl <- createTemporaryDownloadUrlFromPath "logos/8ed22caa-11ea-4c45-a05e-91a51e72558d"
+
+let url :: Text = signedUrl.url
+let expiredAt :: UTCTime = signedUrl.expiredAt
+```
+
+<Note>
+Signed URLs are valid for 7 days. For static directory storage, regular unsigned URLs are returned.
+</Note>
+
+## Upload Limits
+
+Default limits:
+
+- Maximum key/filename length: 32 bytes
+- Maximum files: 10
+- Filesize: unlimited
+- Maximum parameter size: 64KB
+- Maximum header lines: 32 bytes
+- Maximum header line length: 8190 bytes
+
+Customize in `Config/Config.hs`:
+
+```haskell
+import qualified Network.Wai.Parse as WaiParse
+
+config :: ConfigBuilder
+config = do
+    option Development
+    
+    option $ WaiParse.defaultParseRequestBodyOptions
+        |> WaiParse.setMaxRequestNumFiles 20
+```
+
+See the [Network.Wai.Parse documentation](https://hackage.haskell.org/package/wai-extra-3.1.6/docs/Network-Wai-Parse.html) for all available options.

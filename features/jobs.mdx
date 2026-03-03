@@ -1,0 +1,290 @@
+---
+title: Background Jobs
+description: Create and run background jobs in IHP for tasks like sending emails, cleaning data, and processing async workloads
+---
+
+IHP includes built-in functionality for creating and running background jobs, perfect for tasks that can be split into small units and run in parallel.
+
+## Creating a Job
+
+Use the "Background Job" option in the IHP IDE codegen tool to generate job code.
+
+## Implementing a Job
+
+Jobs are created at `<Application>/Job/<Name>.hs`:
+
+```haskell
+module Web.Job.EmailCustomers where
+import Web.Controller.Prelude
+
+instance Job EmailCustomersJob where
+    perform EmailCustomersJob { .. } = do
+        putStrLn "Hello World!"
+```
+
+<Note>
+The job type is generated from a table added to `Schema.sql`. Add columns to the table to include additional data in your job.
+</Note>
+
+### Example: Email Marketing Job
+
+```haskell
+module Web.Job.EmailCustomers where
+import Web.Controller.Prelude
+import IHP.Mail (sendMail)
+
+instance Job EmailCustomersJob where
+    perform EmailCustomersJob { .. } = do
+        customers <- query @Customer |> fetch
+        forEach customers sendToCustomer
+      where
+        sendToCustomer customer = sendMail (MarketingMail customer)
+```
+
+## Running Jobs
+
+### Immediate Execution
+
+```haskell
+newRecord @EmailCustomersJob |> create
+```
+
+### Scheduled Execution
+
+Schedule a job for future execution:
+
+```haskell
+import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
+
+now <- getCurrentTime
+newRecord @EmailCustomersJob 
+    |> set #runAt (addUTCTime nominalDay now)  -- 24 hours from now
+    |> create
+```
+
+<Note>
+IHP polls for scheduled jobs approximately every minute and executes jobs whose `runAt` time has passed.
+</Note>
+
+### Registering Workers
+
+In `Main.hs`, register the workers:
+
+```haskell
+import Web.Worker
+
+instance Worker RootApplication where
+    workers _ = workers WebApplication
+```
+
+### Development vs Production
+
+<Steps>
+  <Step title="Development">
+    Workers start automatically with the dev server.
+  </Step>
+
+  <Step title="Production">
+    Build the `RunJobs` binary:
+    
+    ```bash
+    nix build .#optimized-prod-server
+    # or
+    nix build .#unoptimized-prod-server
+    ```
+    
+    Deploy `result/bin/RunJobs` alongside your app.
+  </Step>
+</Steps>
+
+## Viewing Job Status
+
+Inspect job status in the database:
+
+- `#status` - Current job status
+- `#lastError` - Error message if the job failed
+
+## Configuration
+
+### Maximum Attempts
+
+Default: 10 attempts
+
+```haskell
+instance Job EmailCustomersJob where
+    perform EmailCustomersJob { .. } = do
+        customers <- query @Customer |> fetch
+        forEach customers sendToCustomer
+      where
+        sendToCustomer customer = sendMail (MarketingMail customer)
+    
+    maxAttempts = 3
+```
+
+### Backoff Strategy
+
+Linear backoff (default: 30 seconds):
+
+```haskell
+backoffStrategy :: BackoffStrategy
+backoffStrategy = LinearBackoff { delayInSeconds = 5 }
+```
+
+Exponential backoff:
+
+```haskell
+backoffStrategy :: BackoffStrategy
+backoffStrategy = ExponentialBackoff { delayInSeconds = 5 }
+```
+
+<Note>
+With exponential backoff, delays are: 5s, 25s, 625s, etc.
+</Note>
+
+### Timeout
+
+Default: No timeout
+
+```haskell
+instance Job EmailCustomersJob where
+    perform EmailCustomersJob { .. } = do
+        -- job implementation
+        pure ()
+    
+    timeoutInMicroseconds = Just $ 1000000 * 60  -- 1 minute
+```
+
+<Warning>
+Timed out jobs are retried unless `maxAttempts` is set to 0.
+</Warning>
+
+### Concurrency
+
+Default: 16 concurrent jobs
+
+```haskell
+instance Job EmailCustomersJob where
+    perform EmailCustomersJob { .. } = do
+        -- job implementation
+        pure ()
+    
+    maxConcurrency = 1  -- Process one at a time
+```
+
+## Scheduling with Cron
+
+Create a script to trigger jobs:
+
+```haskell
+#!/usr/bin/env run-script
+module Application.Script.RunEmailCustomersJob where
+
+import Application.Script.Prelude
+
+run :: Script
+run = do
+    newRecord @EmailCustomersJob |> create
+    pure ()
+```
+
+Build the script:
+
+```bash
+nix build .#optimized-prod-server
+```
+
+The script binary will be at `result/bin/RunEmailCustomersJob`.
+
+Add to crontab:
+
+```bash
+# Run daily at 5am
+0 5 * * * root /path/to/your/app/result/bin/RunEmailCustomersJob
+```
+
+<Note>
+Use the full path to the binary in your cron entry.
+</Note>
+
+## Jobs Dashboard
+
+IHP includes a built-in dashboard for viewing and managing jobs.
+
+### Quick Start
+
+In `Web/FrontController.hs`:
+
+```haskell
+import IHP.Job.Dashboard
+
+type MyJobDashboard = JobsDashboardController
+    (BasicAuthStatic "jobs" "jobs")
+    '[]
+
+instance FrontController WebApplication where
+    controllers =
+        [ startPage HomeView
+        , parseRoute @ProductsController
+        , parseRoute @MyJobDashboard  -- Mount at /jobs/
+        ]
+```
+
+Link to the dashboard:
+
+```haskell
+import IHP.Job.Dashboard
+
+<a href={ListJobsAction}>Jobs</a>
+```
+
+### Authentication Options
+
+**No Authentication:**
+```haskell
+type MyJobDashboard = JobsDashboardController NoAuth '[]
+```
+
+**HTTP Basic Auth (static):**
+```haskell
+type MyJobDashboard = JobsDashboardController
+    (BasicAuthStatic "username" "password")
+    '[]
+```
+
+**HTTP Basic Auth (environment variables):**
+```haskell
+type MyJobDashboard = JobsDashboardController BasicAuth '[]
+```
+
+**Custom Authentication:**
+```haskell
+data CustomAuth
+instance AuthenticationMethod CustomAuth where
+    authenticate = do
+        myCustomAuthenticateFunction
+
+type MyJobDashboard = JobsDashboardController CustomAuth '[]
+```
+
+### Custom Job Views
+
+Specify jobs to display:
+
+```haskell
+type MyJobDashboard = JobsDashboardController
+    (BasicAuthStatic "jobs" "jobs")
+    '[UpdateUserJob, CleanDatabaseJob, EmailCustomersJob]
+```
+
+Customize display by implementing `DisplayableJob`:
+
+```haskell
+instance DisplayableJob EmailCustomersJob where
+    makeDashboardSection = -- custom dashboard section
+    makePageView = -- custom list page
+    makeDetailView job = -- custom detail view
+    makeNewJobView = -- custom creation form
+    createNewJob = -- custom creation logic
+```
+
+See the [API documentation](https://ihp.digitallyinduced.com/api-docs/IHP-Job-Dashboard.html) for full details on customization.

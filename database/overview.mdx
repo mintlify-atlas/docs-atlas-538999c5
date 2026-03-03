@@ -1,0 +1,286 @@
+---
+title: Database Overview
+description: Introduction to IHP's PostgreSQL-based database system with automatic schema generation and type-safe operations
+---
+
+## Introduction
+
+IHP provides a few basic functions to access the database. On top of Postgres SQL, we try to provide a thin layer to make it easy to do all the common tasks your web application usually does. Haskell data structures and types are generated automatically based on your database schema.
+
+The only supported database platform is Postgres. Focusing on Postgres allows us to better integrate advanced Postgres-specific solutions into your application.
+
+In development, you do not need to set up anything to use Postgres. The built-in development server automatically starts a Postgres instance to work with your application. The built-in development Postgres server is only listening on a Unix socket and is not available via TCP.
+
+## Connecting to the Database
+
+### Via Terminal
+
+When the development server is running, you can connect to it via `postgresql:///app?host=YOUR_PROJECT_DIRECTORY/build/db` with your favorite database tool. 
+
+When inside the project directory you can also use:
+
+```bash
+make psql
+```
+
+Or start `psql` by pointing at the local sockets file:
+
+```bash
+psql --host=/PATH/TO/PROJECT/DIRECTORY/build/db app
+```
+
+The web interface of the development server also has a GUI-based database editor (like phpmyadmin) at [http://localhost:8001/ShowDatabase](http://localhost:8001/ShowDatabase).
+
+### Via UI Tools
+
+When the development server is running, you can use your favorite UI tool (e.g. [TablePlus](https://tableplus.com/)) that allows connecting to Postgres.
+
+<Steps>
+  <Step title="Get the Database Host">
+    This is the application root + "/build/db". Use this command on terminal from the root of your app and copy the output:
+    
+    ```bash
+    echo `pwd`/build/db
+    ```
+  </Step>
+  
+  <Step title="Get the Database Username">
+    This is the current user you run the terminal with. Run `whoami` command to get that name.
+  </Step>
+  
+  <Step title="Use Database Name">
+    The database name is `app`.
+  </Step>
+</Steps>
+
+## Schema.sql
+
+Once you have created your project, the first step is to define a database schema. The database schema is a SQL file with a lot of `CREATE TABLE ...` statements. You can find it at `Application/Schema.sql`.
+
+In a new project, this file will be empty.
+
+<Note>
+If you are using PostgreSQL 18 or newer, you can set the environment variable `IHP_POSTGRES_VERSION=18` to use the native `uuidv7()` function as the default for new tables and jobs instead of `uuid_generate_v4()`. UUIDv7 provides time-ordered UUIDs that are better for database indexing.
+</Note>
+
+To define your database schema add your `CREATE TABLE ...` statements to the `Schema.sql`. For a users table this can look like this:
+
+```sql
+CREATE TABLE users (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    firstname TEXT NOT NULL,
+    lastname TEXT NOT NULL
+);
+```
+
+Haskell data structures and types are automatically generated from the `Schema.sql` file. They are re-generated on every file change of the `Schema.sql`. We use the well-known [`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple) Haskell library to connect to the database.
+
+## Haskell Bindings
+
+### Model Context
+
+In a pure functional programming language like Haskell, we need to pass the database connection to all functions which need to access the database. We use an implicit parameter `?modelContext :: ModelContext` to pass around the database connection without always specifying it. The [`ModelContext`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#t:ModelContext) data structure is basically just a wrapper around the actual database connection.
+
+An implicit parameter is a parameter which is automatically passed to certain functions, it just needs to be available in the current scope.
+
+This means that all functions which are running database queries will need to be called from a function which has this implicit parameter in scope. A function doing something with the database, will always have a type signature specifying that it requires the `?modelContext` to be available, like this:
+
+```haskell
+myFunc :: (?modelContext :: ModelContext) => IO SomeResult
+```
+
+All controller actions already have `?modelContext` in scope and thus can run database queries. Other application entry-points, like e.g. Scripts, also have this in scope.
+
+This also means, that when a function does not specify that it depends on the database connection in its type signature (like `?modelContext :: ModelContext => ..`), you can be sure that it's not doing any database operations.
+
+### Haskell Data Structures
+
+For every table in the `Schema.sql` a corresponding data structure will be generated on the Haskell side. For example, given a table:
+
+```sql
+CREATE TABLE users (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    firstname TEXT NOT NULL,
+    lastname TEXT NOT NULL
+);
+```
+
+The generated Haskell data structure for this table will look like this:
+
+```haskell
+data User = User
+    { id :: Id User
+    , firstname :: Text
+    , lastname :: Text
+    }
+```
+
+The `id` field type `Id User` is basically just a wrapper around `UUID` for type-safety reasons. All database field names are mapped from `under_score` to `camelCase` on the Haskell side.
+
+When a SQL field can be `NULL`, the Haskell field type will be contained in `Maybe`.
+
+<Note>
+In the Schema Designer, you can take a look at the generated Haskell code by right-clicking the table and clicking `Show Generated Haskell Code`.
+</Note>
+
+## Enums
+
+It's possible to define and use custom enum types with IHP. An enum can be created using the Schema Designer. The process is pretty much the same as when creating a table.
+
+### Adding Enums via the Schema Designer
+
+Open the Schema Designer, right-click into the `Objects` Pane, and then select `Add Enum`.
+
+You have to give a name to your enum type. The name should be in plural form, like with table names. E.g. we could name our enum `colors`.
+
+Next, add the enum values by right-clicking into the `Values` pane and click on `Add Value`. Here we could add values such as `red`, `blue` and `yellow`.
+
+### Adding Enums via SQL
+
+Instead of using the Schema Designer, you can also just add the required SQL statement manually into `Application/Schema.sql`:
+
+```sql
+CREATE TYPE colors AS ENUM ('blue', 'red', 'yellow');
+```
+
+### Using Enums in Haskell Code
+
+The above `colors` example will allow us to access the enum like this:
+
+```haskell
+let blue :: Colors = Blue
+let red :: Colors = Red
+let yellow :: Colors = Yellow
+```
+
+You can use the enum as a field type for another record. E.g. we can have `posts` table and there give each post a color:
+
+```sql
+CREATE TABLE posts (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    body TEXT NOT NULL,
+    color colors
+);
+```
+
+You can use `fill` even with custom enums:
+
+```haskell
+action CreatePostAction = do
+    let post = newRecord @Post
+    post
+        |> fill @["body", "color"]
+        |> ifValid \case
+            Left post -> render NewView { .. }
+            Right post -> do
+                post <- post |> createRecord
+                setSuccessMessage "Post created"
+                redirectTo PostsAction
+```
+
+In your views, use [`inputValue`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#t:InputValue) to get a textual representation for your enum which works with [`fill`](https://ihp.digitallyinduced.com/api-docs/IHP-Controller-Param.html#v:fill):
+
+```haskell
+[hsx|
+<input type="text" value="{inputValue Blue}" />
+|]
+```
+
+## Supported Database Types
+
+IHP currently has support for the following Postgres column types:
+
+- UUID
+- Text
+- VARCHAR(..), CHARACTER VARYING(..)
+- TIMESTAMP WITHOUT TIMEZONE, TIMESTAMP
+- TIMESTAMP WITH TIMEZONE, TIMESTAMPZ
+- BIGINT, INT8
+- SMALLINT, INT2
+- INTEGER, INT4, INT
+- BOOLEAN, BOOL
+- REAL, FLOAT4
+- DOUBLE PRECISION, FLOAT8
+- POINT
+- DATE
+- BYTEA
+- TIME
+- NUMERIC, NUMERIC(..)
+- CHAR(..), CHARACTER(..)
+- SERIAL
+- BIGSERIAL
+- JSONB
+- INET (Only IP addresses, CIDR not supported yet)
+- TSVECTOR
+- Arrays of all the above types
+- Custom types, usually enums
+
+## Transactions
+
+You can use the [`withTransaction`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:withTransaction) function to wrap your database operations in a Postgres database transaction:
+
+```haskell
+withTransaction do
+   company <- newRecord @Company |> createRecord
+
+   user <- newRecord @User
+       |> set #companyId company.id
+       |> createRecord
+
+   company <- company
+       |> setJust #ownerId user.id
+       |> updateRecord
+```
+
+In this example, when the creation of the User fails, the creation of the company will be rolled back. So that no incomplete data is left in the database when there's an error.
+
+The [`withTransaction`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:withTransaction) function will automatically commit after it successfully executed the passed do-block. When any exception is thrown, it will automatically rollback.
+
+<Warning>
+Keep in mind that some IHP functions like [`redirectTo`](https://ihp.digitallyinduced.com/api-docs/IHP-Controller-Redirect.html#v:redirectTo) or [`render`](https://ihp.digitallyinduced.com/api-docs/IHP-Controller-Render.html#v:render) throw a [`ResponseException`](https://ihp.digitallyinduced.com/api-docs/IHP-ControllerSupport.html#t:ResponseException). So code like below will not work as expected:
+
+```haskell
+action CreateUserAction = do
+    withTransaction do
+        user <- newRecord @User |> createRecord
+        redirectTo NewSessionAction
+```
+
+The [`redirectTo`](https://ihp.digitallyinduced.com/api-docs/IHP-Controller-Redirect.html#v:redirectTo) throws a [`ResponseException`](https://ihp.digitallyinduced.com/api-docs/IHP-ControllerSupport.html#t:ResponseException) and will cause a rollback. This code should be structured like this:
+
+```haskell
+action CreateUserAction = do
+    user <- withTransaction do
+        newRecord @User |> createRecord
+
+    redirectTo NewSessionAction
+```
+</Warning>
+
+## Unique Constraints
+
+It's possible to use the UI to set the unique constraint on a column. However, sometimes you might want to add a unique constraint on multiple columns. This can be done by adding a unique constraint to the `Schema.sql` file. For example, to add a unique constraint on the `email` and `username` columns of the `users` table, you would add the following to the `Schema.sql` file:
+
+```sql
+CREATE TABLE users (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    email TEXT NOT NULL,
+    username TEXT NOT NULL,
+    UNIQUE (email, username)
+);
+```
+
+<Note>
+PostgreSQL constraint names have a **63-byte** limit.
+
+For a multi-column unique constraint, Postgres auto-generates a name from table + column names. For `strategy_factor_regime_online` + `(symbol_id, timeframe, ts, version)`, this becomes a long name (truncated form: `strategy_factor_regime_online_symbol_id_timeframe_ts_version_ke`) and can trigger noisy migrations.
+
+**Solution**: use a short explicit constraint name after `CREATE TABLE strategy_factor_regime_online`:
+
+```sql
+ALTER TABLE strategy_factor_regime_online
+    ADD CONSTRAINT uq_sfr_on_main UNIQUE (symbol_id, timeframe, ts, version);
+```
+
+Alternative: use `CREATE UNIQUE INDEX ...`.
+</Note>

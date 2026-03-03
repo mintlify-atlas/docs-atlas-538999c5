@@ -1,0 +1,295 @@
+---
+title: GraphQL Integration
+description: Add GraphQL API support to your IHP application with automatic schema generation from your PostgreSQL database
+---
+
+The `ihp-graphql` package provides GraphQL API support for IHP applications. It automatically generates a GraphQL schema from your PostgreSQL database schema and compiles GraphQL queries to efficient SQL.
+
+## Features
+
+- **Automatic Schema Generation**: GraphQL schema is automatically derived from your `Application/Schema.sql`
+- **Query Compilation**: GraphQL queries are compiled directly to optimized SQL
+- **Relationship Support**: Handles one-to-many and many-to-one relationships using SQL lateral joins
+- **Mutations**: Full support for create, update, and delete operations
+- **Type Safety**: Leverages IHP's type-safe database layer
+
+## Installation
+
+<Steps>
+  <Step title="Add the dependency">
+    Open your project's `default.nix` and add `ihp-graphql` to your `haskellDeps`:
+
+    ```nix
+    let
+        ihp = ...
+        haskellEnv = import "${ihp}/NixSupport/default.nix" {
+            ihp = ihp;
+            haskellDeps = p: with p; [
+                # ...
+                ihp-graphql
+            ];
+            otherDeps = p: with p; [
+            ];
+            projectPath = ./.;
+        };
+    in
+        haskellEnv
+    ```
+  </Step>
+
+  <Step title="Rebuild your environment">
+    Stop your local development server and run:
+
+    ```bash
+    devenv up
+    ```
+  </Step>
+
+  <Step title="Create a GraphQL controller">
+    Create a new file `Web/Controller/GraphQL.hs`:
+
+    ```haskell
+    module Web.Controller.GraphQL where
+
+    import Web.Controller.Prelude
+    import qualified IHP.GraphQL.Compiler as GraphQL
+    import qualified IHP.GraphQL.JSON as GraphQL
+    import qualified Data.Aeson as Aeson
+
+    instance Controller GraphQLController where
+        action GraphQLAction = do
+            request <- getRequestBody @GraphQL.GraphQLRequest
+            
+            let queries = GraphQL.compileDocument request.variables request.query
+            results <- forM queries \(query, params) -> do
+                sqlQuery query params
+            
+            respondJSON $ Aeson.object
+                [ ("data", head results)
+                ]
+    ```
+  </Step>
+
+  <Step title="Add routing">
+    In `Web/Types.hs`, add:
+
+    ```haskell
+    data GraphQLController = GraphQLAction deriving (Eq, Show, Data)
+    ```
+
+    In `Web/Routes.hs`, add:
+
+    ```haskell
+    instance AutoRoute GraphQLController
+    ```
+
+    In `Web/FrontController.hs`, add:
+
+    ```haskell
+    import Web.Controller.GraphQL
+
+    instance FrontController WebApplication where
+        controllers =
+            [ startPage StartpageAction
+            -- ...
+            , parseRoute @GraphQLController
+            ]
+    ```
+  </Step>
+</Steps>
+
+## Usage
+
+### Querying Data
+
+The GraphQL API automatically generates queries based on your database tables. For example, if you have a `users` table:
+
+```graphql
+{
+  users {
+    id
+    email
+  }
+}
+```
+
+This compiles to:
+
+```sql
+SELECT json_build_object('users', json_agg(_users.*)) 
+FROM (SELECT users.id, users.email FROM users) AS _users
+```
+
+### Querying Single Records
+
+Query a single record by ID:
+
+```graphql
+{
+  user(id: "dde8fd2c-4941-4262-a8e0-cc4cd40bacba") {
+    id
+    email
+  }
+}
+```
+
+### Relationships
+
+One-to-many relationships are automatically handled:
+
+```graphql
+{
+  user(id: "40f1dbb4-403c-46fd-8062-fcf5362f2154") {
+    id
+    email
+    tasks {
+      id
+      title
+    }
+  }
+}
+```
+
+This uses PostgreSQL lateral joins for efficient querying:
+
+```sql
+SELECT users.id, users.email, tasks 
+FROM users 
+LEFT JOIN LATERAL (
+  SELECT ARRAY(SELECT to_json(_sub) 
+               FROM (SELECT tasks.id, tasks.title 
+                     FROM tasks 
+                     WHERE tasks.user_id = users.id) AS _sub
+  ) AS tasks
+) tasks ON true 
+WHERE id = '40f1dbb4-403c-46fd-8062-fcf5362f2154'
+```
+
+### Field Aliases
+
+Use aliases to rename fields in the response:
+
+```graphql
+{
+  users {
+    id
+    userEmail: email
+  }
+}
+```
+
+### Mutations
+
+#### Creating Records
+
+```graphql
+mutation CreateProject($project: Project) {
+  createProject(project: $project) {
+    id
+    title
+  }
+}
+```
+
+With variables:
+
+```json
+{
+  "project": {
+    "title": "Hello World",
+    "userId": "dc984c2f-d91c-4143-9091-400ad2333f83"
+  }
+}
+```
+
+#### Updating Records
+
+```graphql
+mutation UpdateProject($projectId: ProjectId, $patch: ProjectPatch) {
+  updateProject(id: $projectId, patch: $patch) {
+    id
+    title
+  }
+}
+```
+
+#### Deleting Records
+
+```graphql
+mutation DeleteProject($projectId: ProjectId) {
+  deleteProject(id: $projectId) {
+    id
+    title
+  }
+}
+```
+
+## Schema Generation
+
+The GraphQL schema is automatically generated from your PostgreSQL schema. For each table:
+
+- A **type** is created for the record (e.g., `User`, `Task`)
+- A **NewRecord** type for creating new records (e.g., `NewUser`)
+- A **Patch** type for updating records (e.g., `UserPatch`)
+- Query fields for fetching single and multiple records
+- Mutation fields for create, update, and delete operations
+
+<Note>
+The GraphQL compiler translates GraphQL queries directly to SQL, ensuring efficient database access without an intermediate data layer.
+</Note>
+
+## Advanced Features
+
+### Fragment Spreads
+
+Reuse common field selections:
+
+```graphql
+query {
+  users {
+    id
+    ...userFragment
+  }
+}
+
+fragment userFragment {
+  email
+}
+```
+
+### Multiple Queries
+
+Query multiple tables in a single request:
+
+```graphql
+{
+  users {
+    id
+  }
+  tasks {
+    id
+    title
+  }
+}
+```
+
+## Best Practices
+
+1. **Use Relationships**: Leverage the automatic relationship handling instead of making multiple queries
+2. **Select Only Needed Fields**: GraphQL compiles to SQL, so requesting fewer fields means less data transfer
+3. **Use Variables**: Always use variables for mutations to prevent SQL injection
+4. **Pagination**: For large datasets, add limit/offset support to your queries
+
+## Package Information
+
+- **Package**: `ihp-graphql`
+- **Version**: 1.3.0
+- **License**: MIT
+- **Maintainer**: support@digitallyinduced.com
+- **Repository**: https://github.com/digitallyinduced/ihp
+
+## See Also
+
+- [Database Guide](/database/overview)
+- [Relationships](/database/relationships)
+- [Controller Guide](/controllers)

@@ -1,0 +1,397 @@
+---
+title: View Layer
+description: Build HTML templates with type-safe views and layouts in IHP
+---
+
+## Introduction
+
+IHP views are usually represented as HTML, but can also be represented as JSON or other formats.
+
+The HTML templating is implemented on top of the well-known blaze-html Haskell library. To quickly build HTML views, IHP supports a JSX-like syntax called HSX. HSX is type-checked and compiled to Haskell code at compile-time.
+
+The controller provides the view with a key-value map called `ControllerContext`. The `ControllerContext` provides the view information it might need to render, without always explicitly passing it. This is usually used to pass e.g. the current HTTP request, logged-in user, flash messages, the layout, etc.
+
+Usually, a view consists of a data structure and a `View` instance. E.g. like this:
+
+```haskell
+data ExampleView = ExampleView { optionA :: Text, optionB :: Bool }
+
+instance View ExampleView where
+    html ExampleView { .. } = [hsx|Hello World {optionA}!|]
+```
+
+## Layouts
+
+By default when rendering an HTML view, IHP uses the default application layout to render your view. It's defined at `defaultLayout` in `Web.View.Layout`.
+
+A layout is just a function taking a view and returning a new view:
+
+```haskell
+type Layout = Html -> Html
+```
+
+### Adding a new layout
+
+To add a new layout, add a new function to the `Web.View.Layout`:
+
+```haskell
+appLayout :: Layout
+appLayout inner = [hsx|
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>{pageTitleOrDefault "My App"}</title>
+    </head>
+    <body>
+        <h1>Welcome to my app</h1>
+        {inner}
+    </body>
+</html>
+|]
+```
+
+Now add `appLayout` to the export list of the module header:
+
+```haskell
+module Web.View.Layout (defaultLayout, appLayout) where
+```
+
+### Using a layout inside a single view
+
+To use the layout inside a view, call `setLayout` from the `beforeRender`:
+
+```haskell
+instance View MyView where
+    beforeRender view = do
+        setLayout appLayout
+```
+
+### Using a layout for a complete controller
+
+When all views of a controller use a custom layout place the `setLayout` call in the `beforeAction` of the controller:
+
+```haskell
+instance Controller MyController where
+    beforeAction = do
+        setLayout appLayout
+
+    action MyAction = do
+        render MyView { .. }
+```
+
+### Layout Variables
+
+Sometimes you want to pass values to the layout without always having to specify them manually inside the `render MyView { .. }` calls.
+
+Here's some examples:
+
+- Your business application wants to display the user's company name as part of the layout on every page
+- The site's navigation is built dynamically based on a `navigation_items` table in the database
+- The layout should show unread notifications
+- The current logged in user
+
+The general idea is that we store the needed information inside the controller context. The controller context is an implicit parameter that is passed around via the `?context` variable during the request response lifecycle.
+
+Open `Web/FrontController.hs` and customize it like this:
+
+```haskell
+-- Web/FrontController.hs
+
+instance InitControllerContext WebApplication where
+    initContext = do
+        -- ...
+
+        initCompanyContext -- <---- ADD THIS
+
+initCompanyContext :: (?context :: ControllerContext, ?modelContext :: ModelContext) => IO ()
+initCompanyContext =
+    case currentUserOrNothing of
+        Just currentUser -> do
+            company <- fetch currentUser.companyId
+
+            -- Here the magic happens: We put the company of the user into the context
+            putContext company
+
+        Nothing -> pure ()
+```
+
+The `initContext` is called on every request, just before the action is executed. The `initCompanyContext` fetches the current user's company and then calls `putContext company` to store it inside the controller context.
+
+Next we'll read the company from the `Layout.hs`:
+
+```haskell
+-- Web/View/Layout.hs
+
+defaultLayout :: Html -> Html
+defaultLayout inner = [hsx|
+    {inner}
+
+    {when isLoggedIn renderCompany}
+|]
+    where
+        isLoggedIn = isJust currentUserOrNothing
+
+renderCompany :: Html
+renderCompany = [hsx|
+    <div class="company">
+        {company.name}
+    </div>
+|]
+
+company :: (?context :: ControllerContext) => Company
+company = fromFrozenContext
+```
+
+Here the company is read by using the `fromFrozenContext` function.
+
+## Common View Tasks
+
+### Accessing the Request
+
+Use `theRequest` to access the current WAI request.
+
+### Passing JSON to the View
+
+You might need to pass JSON values to the view, so later you could have a JS script to read it. You should use Aeson's `toJSON` function to convert your data to JSON and then pass it to the view.
+
+```haskell
+-- Web/Controller/Posts.hs
+instance Controller PostsController where
+    action PostsAction = do
+        posts <- query @Post |> fetch
+
+        render IndexView { .. }
+```
+
+Then in the view, you can access the JSON data like this:
+
+```haskell
+-- Web/View/Posts/Index.hs
+
+module Web.View.Posts.Index where
+import Web.View.Prelude
+
+-- Add Aeson import.
+import Data.Aeson (encode)
+
+data IndexView = IndexView { posts :: [Post] }
+
+instance View IndexView where
+    html IndexView { .. } = [hsx|
+        <div>
+            Open the developer's console to see the posts JSON data.
+        </div>
+        {- Pass the encoded JSON to the JS script -}
+        <script data-posts={encode $ postsToJson posts}>
+            // Parse the encoded JSON, and print to console
+            console.log(JSON.parse(document.currentScript.dataset.posts));
+        </script>
+    |]
+    where
+        postsToJson :: [Post] -> Value
+        postsToJson posts =
+            posts
+                |> fmap (\post -> object
+                    [ "id" .= post.id
+                    , "title" .= post.title
+                    , "body" .= post.body
+                    ])
+                |> toJSON
+```
+
+### Highlighting the current active link
+
+Use `isActiveAction` to check whether the current request URL matches a given action:
+
+```haskell
+<a href={ShowProjectAction} class={classes ["nav-link", ("active", isActiveAction ShowProjectAction)]}>
+    Show Project
+</a>
+```
+
+If you need to work with a Text for the URL you can use the `isActivePath`:
+
+```haskell
+<a href={ShowProjectAction} class={classes ["nav-link", ("active", isActivePath "/ShowProject")]}>
+    Show Project
+</a>
+```
+
+Finally, if you only need to know if the current Controller is used, regardless of which action, use `isActiveController`.
+
+### Breadcrumbs
+
+When using the code generator for a new Controller or View, we get Breadcrumbs pre-configured. You can change them, with three helper functions. All those functions can get a simple text for the label (e.g. `"Posts"`) or even HTML opening the door the using SVG or font icons.
+
+Here are a few common examples:
+
+- `breadcrumbLink "Posts" PostsAction` - Show "Posts" label with link to the Posts index page.
+- `breadcrumbLink [hsx|<i class="fas fa-home"></i>|] HomepageAction` - Using HTML to show a "Home" fonts-awesome icon.
+- `breadcrumbText "Show Post"` - Showing text or HTML, without a link. Normally that would be for the last breadcrumb.
+- `breadcrumbLinkExternal "Back to Portal" "https://example.com"` - Breadcrumb link to an external site.
+
+```haskell
+instance View ShowView where
+    html ShowView { .. } = [hsx|
+        {breadcrumb}
+        <h1>Show Post</h1>
+        <p>{post}</p>
+
+    |]
+        where
+            breadcrumb = renderBreadcrumb
+                            [ breadcrumbLink "Posts" PostsAction
+                            , breadcrumbText "Show Post"
+                            ]
+```
+
+### SEO
+
+#### Setting the Page Title
+
+You can override the default page title by calling `setTitle` inside the `beforeRender` function of your view:
+
+```haskell
+instance View MyView where
+    beforeRender MyView { post } = do
+        setTitle post.title
+
+    -- ...
+```
+
+You can also call `setTitle` from the controller action if needed:
+
+```haskell
+module Web.Controller.Posts where
+
+import Web.Controller.Prelude
+import Web.View.Posts.Show
+
+instance Controller PostsController where
+    action ShowPostAction { postId } = do
+        post <- fetch postId
+        setTitle post.title
+        render ShowView { .. }
+```
+
+If the page title is not changed as expected, make sure that your `Layout.hs` is using `pageTitleOrDefault`:
+
+```html
+WRONG:
+<head>
+    <title>This title will not support customization</title>
+</head>
+
+RIGHT:
+<head>
+    <title>{pageTitleOrDefault "The default page title, can be overridden in views"}</title>
+</head>
+```
+
+#### OG Meta Tags
+
+To dynamically manage meta tags like `<meta property="og:description" content="dynamic content"/>` add this to your `Layout.hs`:
+
+```html
+<head>
+    <title>App</title>
+
+    <!-- ADD THIS: -->
+    {descriptionOrDefault "default meta description"}
+    {ogTitleOrDefault "default title"}
+    {ogTypeOrDefault "article"}
+    {ogDescriptionOrDefault "Hello world"}
+    {ogUrl}
+    {ogImage}
+</head>
+```
+
+You can set the values for these meta tags from the `beforeRender` function within your view:
+
+```haskell
+instance View MyView where
+    beforeRender MyView { post } = do
+        setOGTitle post.title
+        setOGDescription post.summary
+        setOGUrl (urlTo ShowPostAction { .. })
+
+        case post.imageUrl of
+            Just url -> setOGImage url
+            Nothing -> pure () -- When setOGImage is not called, the og:image tag will not be rendered
+
+    -- ...
+```
+
+## JSON
+
+Views that are rendered by calling the `render` function can also respond with JSON.
+
+Let's say we have a normal HTML view that renders all posts for our blog app. We can add a JSON output for all blog posts by adding a `json` function:
+
+```haskell
+import Data.Aeson -- <--- Add this import at the top of the file
+
+instance View IndexView where
+    html IndexView { .. } = [hsx|
+        ...
+    |]
+
+    json IndexView { .. } = toJSON posts -- <---- The new json render function
+```
+
+Additionally we need to define a `ToJSON` instance which describes how the `Post` record is going to be transformed to JSON:
+
+```haskell
+instance ToJSON Post where
+    toJSON post = object
+        [ "id" .= post.id
+        , "title" .= post.title
+        , "body" .= post.body
+        ]
+```
+
+### Getting JSON responses
+
+When you open the `PostsAction` at `/Posts` in your browser you will still get the HTML output. This is because IHP uses the browser `Accept` header to respond in the best format for the browser which is usually HTML.
+
+#### JavaScript
+
+From JavaScript you can get the JSON using `fetch`:
+
+```javascript
+const response = await fetch('http://localhost:8000/Posts', {
+    headers: { Accept: 'application/json' },
+});
+const json = await response.json();
+```
+
+#### curl
+
+You can use `curl` to check out the new JSON response from the terminal:
+
+```bash
+curl http://localhost:8000/Posts -H 'Accept: application/json'
+
+[{"body":"This is a test json post","id":"d559cd60-e36e-40ef-b69a-d651e3257dc9","title":"Hello World!"}]
+```
+
+### Advanced: Rendering JSON directly from actions
+
+When you are building an API and your action is only responding with JSON (so no HTML is expected), you can respond with your JSON directly from the controller using `renderJson`:
+
+```haskell
+instance Controller PostsController where
+    action PostsAction = do
+        posts <- query @Post |> fetch
+        renderJson (toJSON posts)
+
+-- The ToJSON instances still needs to be defined somewhere
+instance ToJSON Post where
+    toJSON post = object
+        [ "id" .= post.id
+        , "title" .= post.title
+        , "body" .= post.body
+        ]
+```
+
+In this example, no content negotiation takes place as the `renderJson` is used instead of the normal `render` function.

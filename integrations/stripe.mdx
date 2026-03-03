@@ -1,0 +1,528 @@
+---
+title: Stripe Integration
+description: Accept payments and manage subscriptions in your IHP application with the official Stripe integration
+---
+
+The IHP Stripe integration allows you to accept payments and manage subscriptions within your IHP application. It provides a complete solution for SaaS billing with support for checkout sessions, webhooks, subscriptions, and invoices.
+
+<Note>
+The IHP Stripe integration is available with [IHP Pro and IHP Business](https://ihp.digitallyinduced.com/ihp-pro.html). By switching to Pro, you're supporting the sustainable development of IHP.
+</Note>
+
+This guide assumes you're familiar with the basics of the Stripe API. If you're new to Stripe, review their [documentation](https://stripe.com/docs) first.
+
+## Installation
+
+<Steps>
+  <Step title="Add the dependency">
+    Add `ihp-stripe` to the `haskellDeps` in your `default.nix`:
+
+    ```nix
+    let
+        ...
+        haskellEnv = import "${ihp}/NixSupport/default.nix" {
+            ihp = ihp;
+            haskellDeps = p: with p; [
+                # ...
+                ihp-stripe
+            ];
+        ...
+    ```
+  </Step>
+
+  <Step title="Rebuild environment">
+    Rebuild your environment:
+
+    ```bash
+    devenv up
+    ```
+  </Step>
+
+  <Step title="Import Stripe config">
+    Add the import to your `Config/Config.hs`:
+
+    ```haskell
+    module Config where
+
+    -- ...
+    import IHP.Stripe.Config
+    ```
+  </Step>
+
+  <Step title="Initialize Stripe">
+    Add a call to `initStripe` in your `Config/Config.hs`:
+
+    ```haskell
+    module Config where
+
+    import IHP.Prelude
+    import IHP.Environment
+    import IHP.FrameworkConfig
+    import IHP.Stripe.Config
+
+    config :: ConfigBuilder
+    config = do
+        option Development
+        option (AppHostname "localhost")
+
+        initStripe
+    ```
+  </Step>
+</Steps>
+
+## Configuration
+
+### Stripe API Keys
+
+Open your `start` script and add the Stripe environment variables:
+
+```bash
+# Add these before the `RunDevServer` call at the end of the file
+export STRIPE_WEBHOOK_SECRET_KEY="whsec_..."
+export STRIPE_PUBLIC_KEY="pk_test_..."
+export STRIPE_SECRET_KEY=""
+
+# Finally start the dev server
+RunDevServer
+```
+
+Replace the placeholder values with your actual Stripe API keys from the [Stripe Dashboard](https://dashboard.stripe.com/test/apikeys). Use test-mode keys for development.
+
+<Note>
+Keep `STRIPE_SECRET_KEY` empty initially. We'll configure it when setting up webhooks.
+</Note>
+
+## Setting Up Subscriptions
+
+### Database Schema
+
+#### Plans Table
+
+Even with a single pricing plan, it's helpful to model plans in your database:
+
+```sql
+CREATE TABLE plans (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    stripe_price_id TEXT NOT NULL
+);
+```
+
+Create a product and price in the [Stripe Dashboard](https://dashboard.stripe.com/test/products), then insert the plan using the IHP Data Editor with the Stripe price ID (looks like `price_...`).
+
+#### Subscriptions Table
+
+```sql
+CREATE TABLE subscriptions (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    user_id UUID NOT NULL,
+    starts_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    ends_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+    is_active BOOLEAN DEFAULT true NOT NULL,
+    stripe_subscription_id TEXT NOT NULL,
+    plan_id UUID NOT NULL,
+    quantity INT DEFAULT 1 NOT NULL
+);
+
+ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_ref_plan_id 
+    FOREIGN KEY (plan_id) REFERENCES plans (id) ON DELETE NO ACTION;
+ALTER TABLE subscriptions ADD CONSTRAINT subscriptions_ref_user_id 
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE NO ACTION;
+```
+
+#### Users Table Updates
+
+Add Stripe-related fields to your users table:
+
+```sql
+CREATE TABLE users (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    -- ...,
+
+    stripe_customer_id TEXT DEFAULT NULL,
+    plan_id UUID DEFAULT NULL,
+    subscription_id UUID DEFAULT NULL
+);
+
+CREATE INDEX users_stripe_customer_id_index ON users (stripe_customer_id);
+CREATE INDEX users_plan_id_index ON users (plan_id);
+CREATE INDEX users_subscription_id_index ON users (subscription_id);
+
+ALTER TABLE users ADD CONSTRAINT users_ref_plan_id 
+    FOREIGN KEY (plan_id) REFERENCES plans (id) ON DELETE NO ACTION;
+ALTER TABLE users ADD CONSTRAINT users_ref_subscription_id 
+    FOREIGN KEY (subscription_id) REFERENCES subscriptions (id) ON DELETE NO ACTION;
+```
+
+### Checkout Sessions Controller
+
+Create the checkout sessions controller in `Web/Types.hs`:
+
+```haskell
+data CheckoutSessionsController
+    = CheckoutSuccessAction
+    | CheckoutCancelAction
+    | CreateCheckoutSessionAction
+    deriving (Eq, Show, Data)
+```
+
+Create `Web/Controller/CheckoutSessions.hs`:
+
+```haskell
+module Web.Controller.CheckoutSessions where
+
+import Web.Controller.Prelude
+
+import qualified IHP.Stripe.Types as Stripe
+import qualified IHP.Stripe.Actions as Stripe
+
+instance Controller CheckoutSessionsController where
+    beforeAction = ensureIsUser
+
+    action CreateCheckoutSessionAction = do
+        -- You can later customize this, e.g. you could pass
+        -- the planId via a form on the pricing page
+        plan <- query @Plan |> fetchOne
+
+        stripeCheckoutSession <- Stripe.send Stripe.CreateCheckoutSession
+                { successUrl = urlTo CheckoutSuccessAction
+                , cancelUrl = urlTo CheckoutCancelAction
+                , mode = "subscription"
+                , paymentMethodTypes = ["card"]
+                , customer = currentUser.stripeCustomerId
+                , lineItem = Stripe.LineItem
+                    { price = plan.stripePriceId
+                    , quantity = 1
+                    , taxRate = Nothing
+                    , adjustableQuantity = Nothing
+                    }
+                , metadata =
+                    [ ("userId", tshow currentUserId)
+                    , ("planId", tshow plan.id)
+                    ]
+                }
+
+        redirectToUrl stripeCheckoutSession.url
+
+    action CheckoutSuccessAction = do
+        plan <- fetchOne currentUser.planId
+        setSuccessMessage ("You're on the " <> plan.name <> " plan now!")
+        redirectToPath "/"
+
+    action CheckoutCancelAction = do
+        redirectToPath "/"
+```
+
+Enable routing in `Web/Routes.hs`:
+
+```haskell
+instance AutoRoute CheckoutSessionsController
+```
+
+Enable the controller in `Web/FrontController.hs`:
+
+```haskell
+import Web.Controller.CheckoutSessions
+
+instance FrontController WebApplication where
+    controllers =
+        [ startPage StartpageAction
+        -- ...
+        , parseRoute @CheckoutSessionsController
+        ]
+```
+
+### Payment Button
+
+Add a payment button to your pricing page:
+
+```html
+<form method="POST" action={CreateCheckoutSessionAction} data-disable-javascript-submission={True}>
+    <button class="btn btn-primary">Subscribe to Plan</button>
+</form>
+```
+
+## Webhooks
+
+Webhooks notify your application about Stripe events like successful payments.
+
+### Webhook Controller
+
+Create `Web/Controller/StripeWebhook.hs`:
+
+```haskell
+module Web.Controller.StripeWebhook where
+
+import Web.Controller.Prelude
+
+import IHP.Stripe.Actions
+import IHP.Stripe.Webhook
+import IHP.Stripe.Types
+
+instance StripeEventController where
+    on CheckoutSessionCompleted { checkoutSessionId, subscriptionId, customer, metadata } = do
+        let userId :: Maybe (Id User) = metadata
+                |> lookup "userId"
+                |> fmap textToId
+        let planId :: Id Plan = metadata
+                |> lookup "planId"
+                |> fmap textToId
+                |> fromMaybe (error "Requires plan id")
+
+        user <- fetchOneOrNothing userId
+        case user of
+            Just user -> do
+                subscription <- newRecord @Web.Controller.Prelude.Subscription
+                    |> set #userId user.id
+                    |> set #stripeSubscriptionId subscriptionId
+                    |> set #planId planId
+                    |> set #quantity 1
+                    |> createRecord
+
+                user
+                    |> setJust #subscriptionId subscription.id
+                    |> setJust #planId planId
+                    |> setJust #stripeCustomerId customer
+                    |> updateRecord
+
+                pure ()
+            Nothing -> do
+                putStrLn "Stripe CheckoutSessionCompleted: User not found."
+                pure ()
+
+    on InvoiceFinalized { subscriptionId, stripeInvoiceId, invoiceUrl, invoicePdf, createdAt, total, currency } = do
+        pure () -- We'll handle this later
+        
+    on OtherEvent = do
+        putStrLn "Skipping OtherEvent"
+```
+
+Add routing in `Web/Routes.hs`:
+
+```haskell
+import IHP.Stripe.Routes
+```
+
+Enable in `Web/FrontController.hs`:
+
+```haskell
+import Web.Controller.StripeWebhook
+import IHP.Stripe.Types
+
+instance FrontController WebApplication where
+    controllers =
+        [ startPage StartpageAction
+        -- ...
+        , parseRoute @StripeWebhookController
+        ]
+```
+
+### Testing Webhooks
+
+Install the [Stripe CLI](https://stripe.com/docs/stripe-cli) and forward events to your local server:
+
+```bash
+stripe listen --forward-to localhost:8000/StripeWebhook
+```
+
+Copy the webhook secret key (starts with `whsec_`) and update your `start` script:
+
+```bash
+export STRIPE_WEBHOOK_SECRET_KEY="whsec_..."
+```
+
+Restart your application.
+
+### Handling Cancellations
+
+Add handlers for subscription updates and deletions:
+
+```haskell
+on CustomerSubscriptionUpdated { subscription = stripeSubscription } = do
+    maybeSubscription <- query @Web.Controller.Prelude.Subscription
+            |> filterWhere (#stripeSubscriptionId, stripeSubscription.id)
+            |> fetchOneOrNothing
+    case maybeSubscription of
+        Just subscription -> do
+            subscription
+                |> set #endsAt (if stripeSubscription.cancelAtPeriodEnd
+                        then stripeSubscription.currentPeriodEnd
+                        else Nothing)
+                |> updateRecord
+            pure ()
+        Nothing -> pure ()
+
+on CustomerSubscriptionDeleted { subscriptionId } = do
+    maybeSubscription <- query @Web.Controller.Prelude.Subscription
+            |> filterWhere (#stripeSubscriptionId, subscriptionId)
+            |> fetchOneOrNothing
+    case maybeSubscription of
+        Just subscription -> do
+            now <- getCurrentTime
+            subscription
+                |> set #endsAt now
+                |> set #isActive False
+                |> updateRecord
+
+            user <- fetch subscription.userId
+            user
+                |> set #planId Nothing
+                |> set #subscriptionId Nothing
+                |> updateRecord
+            pure ()
+        Nothing -> pure ()
+```
+
+## Billing Portal
+
+Integrate Stripe's customer billing portal:
+
+```haskell
+import qualified IHP.Stripe.Actions as Stripe
+import qualified IHP.Stripe.Types as Stripe
+
+action OpenBillingPortalAction = do
+    subscription <- fetchOne currentUser.subscriptionId
+
+    stripeSubscription <- Stripe.send Stripe.RetrieveSubscription 
+        { id = subscription.stripeSubscriptionId }
+
+    billingPortal <- Stripe.send Stripe.CreateBillingPortalSession
+            { customer = stripeSubscription.customer
+            , returnUrl = urlTo StartpageAction
+            }
+
+    redirectToUrl billingPortal.url
+```
+
+Link to it with a form:
+
+```html
+<form method="POST" action={OpenBillingPortalAction} data-disable-javascript-submission={True}>
+    <button type="submit" class="btn btn-primary">Change Payment Details</button>
+</form>
+```
+
+## Invoices
+
+### Schema
+
+Add an invoices table:
+
+```sql
+CREATE TABLE invoices (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    subscription_id UUID NOT NULL,
+    stripe_invoice_id TEXT NOT NULL,
+    invoice_url TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    invoice_pdf TEXT NOT NULL,
+    total INT NOT NULL,
+    currency TEXT NOT NULL
+);
+
+ALTER TABLE invoices ADD CONSTRAINT invoices_ref_subscription_id 
+    FOREIGN KEY (subscription_id) REFERENCES subscriptions (id) ON DELETE NO ACTION;
+```
+
+### Webhook Handler
+
+Implement the `InvoiceFinalized` handler:
+
+```haskell
+on InvoiceFinalized { subscriptionId, stripeInvoiceId, invoiceUrl, invoicePdf, createdAt, total, currency } = do
+    subscriptionMaybe <- query @Subscription
+        |> filterWhere (#stripeSubscriptionId, subscriptionId)
+        |> fetchOneOrNothing
+
+    case subscriptionMaybe of
+        Just subscription -> do
+            existingInvoice <- query @Invoice
+                |> filterWhere (#stripeInvoiceId, stripeInvoiceId)
+                |> fetchOneOrNothing
+
+            case existingInvoice of
+                Just invoice -> do
+                    invoice
+                        |> set #invoiceUrl invoiceUrl
+                        |> set #createdAt createdAt
+                        |> set #invoicePdf invoicePdf
+                        |> set #total (fromInteger total)
+                        |> set #currency currency
+                        |> updateRecord
+                    pure ()
+                Nothing -> do
+                    invoice <- newRecord @Invoice
+                        |> set #subscriptionId subscription.id
+                        |> set #stripeInvoiceId stripeInvoiceId
+                        |> set #invoiceUrl invoiceUrl
+                        |> set #createdAt createdAt
+                        |> set #invoicePdf invoicePdf
+                        |> set #total (fromInteger total)
+                        |> set #currency currency
+                        |> createRecord
+                    pure ()
+            pure ()
+        Nothing -> do
+            putStrLn "Stripe InvoiceFinalized: Subscription not found."
+            pure ()
+```
+
+### Displaying Invoices
+
+Create an invoices controller:
+
+```haskell
+action InvoicesAction = do
+    subscriptions <- query @Subscription
+        |> filterWhere (#userId, currentUserId)
+        |> fetch
+
+    invoices <- query @Invoice
+        |> orderByDesc #createdAt
+        |> filterWhereIn (#subscriptionId, ids subscriptions)
+        |> fetch
+
+    render IndexView { .. }
+```
+
+Render invoices in your view:
+
+```haskell
+renderInvoice :: Invoice -> Html
+renderInvoice invoice = [hsx|
+    <div class="card d-flex flex-row py-3 px-1 mb-1">
+        <div class="col">
+            <a>{invoice.createdAt |> date}</a>
+        </div>
+        <div class="col">
+            <a href={invoice.invoiceUrl} target="_blank">Subscription</a>
+        </div>
+        <div class="col">
+            <a>{renderPrice invoice.currency invoice.total}</a>
+        </div>
+        <div class="col-xs mr-3">
+            <a href={invoice.invoicePdf}>Download</a>
+        </div>
+    </div>
+|]
+
+renderPrice :: Text -> Int -> Text
+renderPrice "eur" amount = show (fromIntegral(amount)/100) <> "€"
+renderPrice "usd" amount = "$" <> show (fromIntegral(amount)/100)
+renderPrice code amount = show (fromIntegral(amount)/100) <> toUpper code
+```
+
+## Best Practices
+
+1. **Use Test Mode**: Always use test mode keys during development
+2. **Handle Webhooks**: Webhooks are the reliable way to track payment events
+3. **Validate Metadata**: Always validate webhook metadata before processing
+4. **Tax Compliance**: Use [Stripe Tax](https://stripe.com/tax) for automatic VAT collection
+5. **Error Handling**: Implement proper error handling for all Stripe API calls
+
+## See Also
+
+- [Authentication](/features/authentication)
+- [Database](/database/overview)
+- [Jobs](/features/jobs)

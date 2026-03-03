@@ -1,0 +1,540 @@
+---
+title: Relationships
+description: Work with database relationships including has-many, belongs-to, and many-to-many associations in IHP
+---
+
+## Introduction
+
+The following sections assume the following database schema being given. It's the same as in "Your First Project".
+
+```sql
+CREATE TABLE posts (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+CREATE TABLE comments (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    post_id UUID NOT NULL,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+ALTER TABLE comments ADD CONSTRAINT comments_ref_post_id FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE;
+```
+
+## Has Many Relationships
+
+Given a specific post, we can fetch the post and all its comments like this:
+
+```haskell
+let postId :: Id Post = ...
+
+post <- fetch postId
+    >>= fetchRelated #comments
+```
+
+This Haskell code will trigger the following SQL queries to be executed:
+
+```sql
+SELECT posts.* FROM posts WHERE id = ?  LIMIT 1
+SELECT comments.* FROM comments WHERE post_id = ?
+```
+
+In the view we can just access the comments like this:
+
+```haskell
+[hsx|
+    <h1>{post.title}</h1>
+    <h2>Comments:</h2>
+    {post.comments}
+|]
+```
+
+The `post.comments` returns a list of the comments belonging to the post.
+
+The type of `post` is [`Include "comments" Post`](https://ihp.digitallyinduced.com/api-docs/IHP-MailPrelude.html#t:Include) instead of the usual `Post`. This way the state of a fetched nested resource is tracked at the type level.
+
+<Note>
+It is possible to have multiple nested resources. For example, if Post had a list of comments and tags related to it, it can be defined as [`Include "comments" (Include "tags" Post)`](https://ihp.digitallyinduced.com/api-docs/IHP-MailPrelude.html#t:Include) or with the more convenient way as [`Include' ["comments", "tags"] Post`](https://ihp.digitallyinduced.com/api-docs/IHP-MailPrelude.html#t:Include-39-).
+
+Note that for the above example, it is expected that the query will change as-well:
+
+```haskell
+let postId :: Id Post = ...
+
+post <- fetch postId
+    >>= fetchRelated #comments
+    >>= fetchRelated #tags
+```
+</Note>
+
+### Ordering Relationships
+
+When we want to order the relationship in a certain way, we can just apply our commonly used [`orderBy`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:orderBy) function:
+
+```haskell
+let postId :: Id Post = ...
+
+post <- fetch postId
+    >>= pure . modify #comments (orderByDesc #createdAt)
+    >>= fetchRelated #comments
+```
+
+This works because the `comments` field of a `Post` is just a [`QueryBuilder`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#t:QueryBuilder) before we call [`fetchRelated`](https://ihp.digitallyinduced.com/api-docs/IHP-FetchRelated.html#v:fetchRelated).
+
+This query builder is equivalent to:
+
+```haskell
+query @Comment |> filterWhere (#postId, post.id)
+```
+
+The call to `>>= pure . modify #comments (orderByDesc #createdAt)` just appends a [`|> orderByDesc #createdAt`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:orderByDesc) like this:
+
+```haskell
+query @Comment |> filterWhere (#postId, post.id) |> orderByDesc #createdAt
+```
+
+Then the [`fetchRelated`](https://ihp.digitallyinduced.com/api-docs/IHP-FetchRelated.html#v:fetchRelated) basically just executes this query builder and puts the result back into the `comments` field of the `post` record.
+
+### Multiple Records
+
+#### Fetching all Posts with their Comments (One-to-many)
+
+When we want to fetch all the comments for a list of posts, we can use [`collectionFetchRelated`](https://ihp.digitallyinduced.com/api-docs/IHP-FetchRelated.html#v:collectionFetchRelated):
+
+```haskell
+posts <- query @Post
+    |> fetch
+    >>= collectionFetchRelated #comments
+```
+
+This will query all posts with all their comments. The type of `posts` is [`[Include "comments" Post]`](https://ihp.digitallyinduced.com/api-docs/IHP-MailPrelude.html#t:Include).
+
+The above Haskell code will trigger the following two SQL queries to be executed:
+
+```sql
+SELECT posts.* FROM posts
+SELECT comments.* FROM comments WHERE post_id IN (?)
+```
+
+Inside the view you can access the comments like this:
+
+```haskell
+render = [hsx|
+    <h1>Posts</h1>
+    {forEach posts renderPost}
+|]
+
+renderPost :: Include "comments" Post -> Html
+renderPost post = [hsx|
+    <h2>{post.title}</h2>
+    {forEach comments renderComment}
+|]
+    where
+        comments = post.comments
+
+renderComment :: Comment -> Html
+renderComment comment = [hsx|
+    <div class="comment">{comment.body}</div>
+|]
+```
+
+#### Fetching all Comments with their Posts (Many-to-one)
+
+When we want to fetch all comments and display them with their posts, we need to do the reverse of the above:
+
+```haskell
+comments <- query @Comment
+    |> fetch
+    >>= collectionFetchRelated #postId
+```
+
+This will query all comments and their respective posts. The type of `comments` is [`[Include "postId" Comment]`](https://ihp.digitallyinduced.com/api-docs/IHP-MailPrelude.html#t:Include).
+
+The Haskell code will trigger the following two SQL queries:
+
+```sql
+SELECT comments.* FROM comments
+SELECT posts.* FROM posts WHERE id IN (?)
+```
+
+Inside the view you can access the comment's post like this:
+
+```haskell
+render = [hsx|
+    <h1>Comments</h1>
+    {forEach comments renderComment}
+|]
+
+renderComment :: Include "postId" Comment -> Html
+renderComment comment = [hsx|
+    <h2>{post.title}</h2>
+    <div class="comment">{comment.body}</div>
+|]
+    where
+        -- The post is stored inside the postId field of the comment
+        post = comment.postId
+```
+
+### Order With Multiple Records
+
+If you want to sort the results after fetching multiple records with [`collectionFetchRelated`](https://ihp.digitallyinduced.com/api-docs/IHP-FetchRelated.html#v:collectionFetchRelated):
+
+```haskell
+posts <-
+    query @Post
+        |> fetch
+        >>= pure . map (modify #comments (orderBy #createdAt))
+        >>= collectionFetchRelated #comments
+```
+
+## Belongs To Relationships
+
+Given a specific comment, we can fetch the post this comment belongs to. Like other relationships this is also using [`fetchRelated`](https://ihp.digitallyinduced.com/api-docs/IHP-FetchRelated.html#v:fetchRelated):
+
+```haskell
+let comment :: Id Comment = ...
+
+comment <- fetch comment
+    >>= fetchRelated #postId
+```
+
+This Haskell code will trigger the following SQL queries to be executed:
+
+```sql
+SELECT comments.* FROM comments WHERE id = ? LIMIT 1
+SELECT posts.* FROM posts WHERE id = ?  LIMIT 1
+```
+
+In the view we can just access the comments like this:
+
+```haskell
+[hsx|
+    <h1>Comment to {comment.postId.title}</h1>
+    <h2>Comments:</h2>
+    {comment.body}
+|]
+```
+
+The type of `comment` is [`Include "postId" Comment`](https://ihp.digitallyinduced.com/api-docs/IHP-FetchRelated.html#v:fetchRelated) instead of the usual `Comment`. This way the state of a fetched nested resource is tracked at the type level.
+
+## Delete Behavior
+
+Usually, all your relations are secured at the database layer by using foreign key constraints. But that means e.g. deleting a post will fail when there still exists comments.
+
+By default, a new foreign key constraint created via the Schema Designer has no `on delete` behavior specified. Therefore the foreign key constraint will look like this:
+
+```sql
+ALTER TABLE comments ADD CONSTRAINT comments_ref_post_id FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE NO ACTION;
+```
+
+See the `NO ACTION` at the end of the statement? We have to change this do `CASCADE` to delete all comments when the related post is going to be deleted:
+
+```sql
+ALTER TABLE comments ADD CONSTRAINT comments_ref_post_id FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE;
+```
+
+<Note>
+Of course, you can change this using the Schema Designer by clicking on the foreign key next to the `post_id` column in the `comments` table.
+</Note>
+
+## Joins
+
+It is possible to join tables to a given primary table (the one associated with the queried type) and use the joined table to select rows from the primary table. For instance, the following code could be used to retrieve all posts by users from department 5:
+
+```haskell
+query @Post
+        |> innerJoin @User (#authorId, #id)
+        |> innerJoinThirdTable @Department @User (#id, #departmentId)
+        |> filterWhereJoinedTable @Department (#number, 5)
+        |> fetch
+```
+
+[`innerJoin`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:innerJoin) is used to join the `users` table (for type `User`) to the primary table `posts` (for type `Posts`) on the columns `posts.author_id` and `users.id`. Type checks ascertain that both tables actually have the pertinent columns.
+
+The function [`innerJoinThirdTable`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:innerJoinThirdTable) is used to join a third table on a column of some previously joined table. In the example, the table is `departments` and it is joined on `departments.id = users.department_id`. Again, the type system ascertains that the columns actually exist on the pertinent tables. It is furthermore ascertained that the table associated with the second type `User` has been joined before.
+
+To add `WHERE` clauses involving a joined table, there is a family of functions named like the ordinary filter functions, but suffixed with "JoinedTable". Where the normal filter functions use columns from the primary table, the table that the JoinedTable-functions operate on is specified by the type they are called with. In the example, the [`filterWhereJoinedTable`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhereJoinedTable) filters all rows where `department.number` equals 5.
+
+### Many-to-many Relationships with Joins
+
+Joins are also useful when it comes to many-to-many relationships. An example is the relationship between blog posts and tags: each post can have multiple tags and each tag can be attached to any number of posts. The following code could be used to obtain all posts with the tag 'haskell' or 'ihp'.
+
+```haskell
+query @Post
+        |> innerJoin @Tagging (#id, #postId)
+        |> innerJoinThirdTable @Tag @Tagging (#id, #tagId)
+        |> filterWhereInJoinedTable @Tag (#tagText, ["haskell", "ihp"])
+        |> fetch
+```
+
+In the above example, the relationship between tags and posts will be lost after executing the query and it is impossible to find out, from the list of results alone, which post bears which tag. The function `labelResults` can be used to make this relationship transparent. The following code could be used to obtain a list of all posts together with the ids of the tags they are attached to.
+
+```haskell
+labeledComments <-
+   query @Post
+      |> innerJoin @Tagging (#id, #postId)
+      |> innerJoinThirdTable @Tag @Tagging (#id, #tagId)
+      |> labelResults @Tag #id
+      |> fetch
+```
+
+`labeledComments` will be a list of objects of type `LabeledData`:
+
+```haskell
+data LabeledData a b = LabeledData { labelValue :: a, contentValue :: b }
+```
+
+In the case above, `a` would be instantiated by `(Id' "tags")` and `b` by `Post`.
+
+## Multiple Nested Records
+
+`fetchRelated` can be handy to quickly fetch nested records. However, one of its limitations is that you can only go down one level. For example, if you have a `Post` with a `Comment` and that `Comment` references a `User` (the comment author), you can't fetch the `User`.
+
+A common way for solving this would be using a custom data type, and fetching the data manually. Let's take the above example, and assume we have this schema:
+
+```sql
+posts:
+- id
+- title
+
+comments:
+- id
+- post_id # Reference to the `Post`
+- user_id # Reference to the `User` that is the author.
+
+user:
+- id
+- name
+```
+
+We can define a custom data type like this under `Web/Types.hs`:
+
+```haskell
+{-| The result of fetching a `Post` with all the nested records.
+
+@see `fetchPostWithRecords`
+-}
+data PostWithRecords = PostWithRecords
+    { post :: !Post
+    , comments :: ![Comment]
+    , commentUsers :: ![User]
+    } deriving (Show)
+```
+
+And then we can fetch the data like this. Let's place this code under `Application/Helper/Controller.hs` as it might be used in multiple controllers:
+
+```haskell
+{-| a `Post` with all the nested records along with the referencing `Comment`s,
+and the authors of those comments.
+-}
+fetchPostWithRecords :: (?modelContext :: ModelContext) => Id Post -> IO PostWithRecords
+fetchPostWithRecords postId = do
+    post <- fetch postId
+
+    -- Fetch Comments referencing the post ID.
+    -- Even though we haven't used `fetchRelated` on the Post we still have the `post.comments` field.
+    -- This field is a query builder with the right `WHERE` condition already applied (referencing the Post ID),
+    -- so we only need to `fetch` and don't have to use the more verbose `query`:
+    comments <- fetch post.comments
+
+    -- Authors of the comments.
+    commentUsers <- query @User
+        |> filterWhereIn (#id, map (get #userId) comments)
+        |> fetch
+
+    return $ PostWithRecords { .. }
+```
+
+Then on the controller of the `Post` in `Web/Controller/Posts.hs` we can fetch the data and handover to our `Show` view:
+
+```haskell
+instance Controller PostsController where
+
+    -- ...
+
+    action ShowPostAction { postId } = do
+        -- Fetch the post with all the nested records.
+        postWithRecords <- fetchPostWithRecords postId
+        render ShowView { .. }
+```
+
+Our view can now use all those records, and show the post title, along with the comments and their authors.
+
+```haskell
+module Web.View.Posts.Show where
+import Web.View.Prelude
+
+-- We are now getting the `PostWithRecords` not only the `Post`.
+data ShowView = ShowView { postWithRecords :: PostWithRecords }
+
+instance View ShowView where
+    html ShowView { .. } = [hsx|
+        <h1>Show Post</h1>
+        <p>{post.title}</p>
+        <h2>Comments</h2>
+        {forEach comments (\comment -> showComment comment commentUsers)}
+    |]
+        where
+            -- Extract the records out of the `postWithRecords` variable.
+            post = postWithRecords.post
+            comments = postWithRecords.comments
+            commentUsers = postWithRecords.commentUsers
+
+showComment :: Comment -> [User] -> Html
+showComment comment commentUsers =
+    [hsx|
+        {comment.body} authored by {authorName}
+    |]
+    where
+        authorName = commentUsers
+            |> find (\user -> user.id == comment.userId)
+            -- Get the user's name. As `find` returns a Maybe value we need to use `maybe ""`
+            |> maybe "" (get #name)
+```
+
+## Many-to-many Relationships and Views
+
+Let's say we have the following schema:
+
+```sql
+posts:
+- id
+
+tags:
+- id
+- name
+
+posts_tags:
+- id
+- post_id
+- tag_id
+```
+
+We want to display a list of all posts with their tags.
+
+We can use it like this:
+
+```haskell
+action PostsAction = do
+    posts <- query @Post |> fetch
+
+    postsTags <- query @PostTag
+        |> filterWhereIn (#postId, ids posts)
+        |> fetch
+
+    tags <- query @Tag
+        |> filterWhereIn (#id, map (.tagId) postsTags)
+        |> fetch
+
+    render PostsView { .. }
+```
+
+In our view we can now render the posts like this:
+
+```haskell
+html PostsView { .. } = [hsx|
+    {forEach posts renderPost}
+|]
+    where
+        renderPost post = [hsx|
+            {post}
+            {forEach thisTags renderTag}
+        |]
+            where
+                thisTags :: [Tag]
+                thisTags = postsTags
+                    |> filter (\postTag -> postTag.postId == post.id)
+                    |> mapMaybe (\postTag -> find (\tag -> tag.id == postTag.tagId) tags)
+
+        renderTag tag = [hsx|
+            <span>{tag.name}</span>
+        |]
+```
+
+## Disabling Relation Support for Faster Compilation
+
+IHP generates type-level machinery to support `fetchRelated` and `Include`: type parameters on record types, `QueryBuilder` fields for has-many relationships, and `Include` type family instances. For large schemas this adds significant compile time.
+
+If your project does not use `fetchRelated` or `Include` types, you can disable this machinery by setting `ihp.relationSupport = false;` in your `flake.nix`:
+
+```nix
+ihp = {
+    enable = true;
+    relationSupport = false;
+};
+```
+
+This applies to both the dev shell and production builds.
+
+Alternatively, set the environment variable manually:
+
+```bash
+export IHP_RELATION_SUPPORT=0
+```
+
+### What Changes
+
+With `IHP_RELATION_SUPPORT=0`, the generated types are simplified:
+
+**Default (relation support enabled):**
+```haskell
+data Post' userId comments = Post
+    { id :: Id' "posts"
+    , title :: Text
+    , userId :: userId
+    , comments :: comments
+    , meta :: MetaBag
+    }
+
+type Post = Post' (Id' "users") (QueryBuilder.QueryBuilder "comments")
+```
+
+**With `IHP_RELATION_SUPPORT=0`:**
+```haskell
+data Post' = Post
+    { id :: Id' "posts"
+    , title :: Text
+    , userId :: (Id' "users")
+    , meta :: MetaBag
+    }
+
+type Post = Post'
+```
+
+The key differences:
+
+- Record types have no type parameters (foreign key columns use concrete types like `Id' "users"` directly)
+- Has-many `QueryBuilder` fields (e.g. `comments`) are omitted from records
+- `Include` type family modules are not generated
+- `UpdateField` instances are simplified (no type-changing updates)
+
+### What Stops Working
+
+When relation support is disabled, you cannot use:
+
+- `fetchRelated` and `collectionFetchRelated`
+- `Include` and `Include'` types
+- `modify` on `QueryBuilder` relationship fields (e.g. `modify #comments (orderByDesc #createdAt)`)
+- Direct access to has-many fields like `post.comments`
+
+You can still query related records manually:
+
+```haskell
+post <- fetch postId
+comments <- query @Comment
+    |> filterWhere (#postId, post.id)
+    |> fetch
+```
+
+### When to Use This
+
+This is useful when:
+
+- Your project has a large schema (50+ tables) and compile times are slow
+- You prefer explicit queries over `fetchRelated`
+- You are building an API-only service that does not use the `Include` pattern

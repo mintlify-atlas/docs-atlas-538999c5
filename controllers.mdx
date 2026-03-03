@@ -1,0 +1,290 @@
+---
+title: Controller Pattern
+description: Learn how to handle requests with IHP's controller and action system
+---
+
+## Introduction
+
+In IHP an action is a place for request handling logic. A controller is just a group of related actions.
+
+You can think about actions as messages sent to your application, e.g. a `ShowPostAction { postId :: Id Post }` is the message "Show me the post with id $postId".
+
+Each action needs to be defined as a data structure inside `Web/Types.hs`. Therefore you can see an overview of all the messages which can be sent to your application just by looking at `Web/Types.hs`.
+
+## Creating a new Controller
+
+We recommend using the code generators for adding a new controller. Using the web GUI, you can open [http://localhost:8001/NewController](http://localhost:8001/NewController). Using the CLI, run `new-controller CONTROLLER_NAME`.
+
+The following section will guide you through the manual process of creating a new controller.
+
+<Steps>
+  <Step title="Define the controller type">
+    Let's say we want to create a new controller with a single action `ShowPostAction`. First we need to define our types in `Web/Types.hs`:
+
+    ```haskell
+    data PostsController
+        = ShowPostAction { postId :: !(Id Post) }
+        deriving (Eq, Show, Data)
+    ```
+
+    This defines a type `PostsController` with a data constructor `ShowPostAction { postId :: !(Id Post) }`. The argument `postId` will later be filled with the `postId` parameter of the request URL. This is done automatically by the IHP router.
+  </Step>
+
+  <Step title="Implement the action logic">
+    After we have defined the "interface" for our controller, we need to implement the actual request handling logic. IHP expects to find this inside the `action` function of the `Controller` instance. We can define this instance in `Web/Controller/Posts.hs`:
+
+    ```haskell
+    module Web.Controller.Posts where
+
+    import Web.Controller.Prelude
+
+    instance Controller PostsController where
+        action ShowPostAction { postId } = renderPlain "Hello World"
+    ```
+
+    This implementation for `ShowPostAction` responds with a simple plain text message. The `action` implementation is usually a big pattern match over all possible actions of a controller.
+  </Step>
+</Steps>
+
+## Reading Query and Body Parameters
+
+Inside the action, you can access request parameters using the `param` function. A parameter can either be a URL parameter like `?paramName=paramValue` (this is also called a query parameter), or given as a form field like `<form><input name="paramName" value="paramValue"/></form>` (in that case we're talking about a body parameter).
+
+Given a request like `GET /UsersAction?maxItems=50`, you can access the `maxItems` like this:
+
+```haskell
+action UsersAction = do
+    let maxItems = param @Int "maxItems"
+```
+
+The value is automatically transformed to an `Int`. This parsing works out of the box for Ids, UUID, Bools, Timestamps, etc. Here are some more examples:
+
+```haskell
+action ExampleAction = do
+    let userName = param @Text "userName"
+    let timestamp = param @UTCTime "createdAt"
+    let userId = param @(Id User) "userId"
+```
+
+### Missing parameters
+
+In case there is a problem parsing the request parameter, an error will be triggered.
+
+When the parameter is optional, use `paramOrDefault`:
+
+```haskell
+action UsersAction = do
+    let maxItems = paramOrDefault @Int 50 "maxItems"
+```
+
+When this action is called without the `maxItems` parameter being set (or when invalid), it will fall back to the default value `50`.
+
+There is also `paramOrNothing` which will return `Nothing` when the parameter is missing and `Just theValue` otherwise.
+
+### Multiple Params With Same Name (Checkboxes)
+
+When working with checkboxes sometimes there are multiple values for a given parameter name. Given a form like this:
+
+```html
+<h1>Pancake</h1>
+
+<input name="ingredients" type="checkbox" value="milk" /> Milk
+
+<input name="ingredients" type="checkbox" value="egg" /> Egg
+```
+
+When both checkboxes for Milk and Egg are checked, the usual way of calling `param @Text "ingredients"` will only return the first ingredient `"Milk"`. To access all the checked `ingredients` use `paramList`:
+
+```haskell
+action BuildFood = do
+    let ingredients = paramList @Text "ingredients"
+```
+
+When this action is called with both checkboxes checked `ingredients` will be set to `["milk", "egg"]`. When no checkbox is checked it will return an empty list.
+
+### Passing Data from the Action to the View
+
+A common task is to pass data from the action to the view for rendering. You can do this by extending the view data structure by the required data.
+
+Given an action like this:
+
+```haskell
+action ExampleAction = do
+    render ExampleView { .. }
+```
+
+And an `ExampleView` like this:
+
+```haskell
+data ExampleView = ExampleView { }
+
+instance View ExampleView where
+    html ExampleView { .. } = [hsx|Hello World!|]
+```
+
+Now we want to pass the user's first name to the view, to make the hello world a bit more personal. We can just do it by adding a `firstname :: Text` field to the `ExampleView` data structure and then adding a `{firstname}` to the HSX:
+
+```haskell
+data ExampleView = ExampleView { firstname :: Text }
+
+instance View ExampleView where
+    html ExampleView { .. } = [hsx|Hello World, {firstname}!|]
+```
+
+By now, the compiler will already tell us that we have not defined the `firstname` field inside the action. So we also need to update the action:
+
+```haskell
+action ExampleAction = do
+    let firstname = "Tester"
+    render ExampleView { .. } -- Remember: ExampleView { .. } is just short for ExampleView { firstname = firstname }
+```
+
+### Populating Records from From Data with `fill`
+
+When working with records, use `fill` instead of `param`. `fill` automatically deals with validation failure when e.g. a field value needs to be an integer, but the submitted value is not numeric.
+
+Here is an example of using `fill`:
+
+```haskell
+action CreatePostAction = do
+    let post = newRecord @Post
+    post
+        |> fill @'["title", "body"]
+        |> ifValid \case
+            Left post -> render NewView { .. }
+            Right post -> do
+                post <- post |> createRecord
+                setSuccessMessage "Post created"
+                redirectTo PostsAction
+```
+
+In the above example we are creating a new post record and then we are filling it with the values from the request. If the request contains invalid data, we are rendering the `NewView` again, so the user can fix the errors. If the request contains valid data, we are creating the post record and redirecting to the `PostsAction`.
+
+## Lifecycle
+
+The Controller instance provides a `beforeAction` function, which is called before the `action` function is called. Common request handling logic like authentication is often placed inside `beforeAction` to protect all actions of the controller against unprotected access.
+
+Here is an example to illustrate the lifecycle:
+
+```haskell
+instance Controller PostsController where
+    beforeAction = putStrLn "A"
+    action ShowPotsAction { postId } = putStrLn "B"
+```
+
+Calling the `ShowPostAction` will cause the following output to be logged to the server console:
+
+```
+A
+B
+```
+
+Here is an example to illustrate authentication:
+
+```haskell
+instance Controller PostsController where
+    beforeAction = ensureIsUser
+    action ShowPostAction { postId } = ...
+```
+
+## Rendering Responses
+
+### Rendering Views
+
+Inside a controller, you have several ways of sending a response. The most common way is to use the `render` function with a `View` data structure, like this:
+
+```haskell
+render ShowPostView { .. }
+```
+
+The `render` function automatically picks the right response format based on the `Accept` header of the browser. It will try to send an HTML response when HTML is requested, and will also try to send a JSON response when a JSON response is expected. A `406 Not Acceptable` will be send when the `render` function cannot fulfill the requested `Accept` formats.
+
+### Rendering Plain Text
+
+Call `renderPlain` to send a simple plain text response:
+
+```haskell
+action ExampleAction = do
+    renderPlain "My output text"
+```
+
+### Rendering HTML
+
+Usually, you want to render your HTML using a view. See `Rendering Views` for details.
+
+Sometimes you want to render HTML without using views, e.g. doing it inline in the action. Call `respondHtml` for that:
+
+```haskell
+action ExampleAction = do
+    respondHtml [hsx|<div>Hello World</div>|]
+```
+
+You will need to import `hsx` into your controller: `import IHP.ViewPrelude (hsx)`.
+
+### Rendering a Not Found Message
+
+Use `renderNotFound` to render a generic not found message, e.g. when an entity cannot be found:
+
+```haskell
+action ExampleAction = do
+    renderNotFound
+```
+
+## Redirects
+
+### Redirect to an Action
+
+Use `redirectTo` to redirect to an action:
+
+```haskell
+action ExampleAction = do
+    redirectTo ShowPostAction { postId = ... }
+```
+
+The redirect will use HTTP status code `302`. The `baseUrl` in `Config/Config.hs` will be used. In development mode, the `baseUrl` might not be specified in `Config/Config.hs`. Then it will be set to localhost by default.
+
+If you need to force the follow-up request to be a `GET` (e.g. after a `POST` or `DELETE`), use `redirectToSeeOther` to send a 303 See Other:
+
+```haskell
+action ExampleAction = do
+    redirectToSeeOther ShowPostAction { postId = ... }
+```
+
+### Redirect to a Path
+
+Use `redirectToPath` when you want to redirect to a path on the same domain:
+
+```haskell
+action ExampleAction = do
+    redirectToPath "/blog/wp-login.php"
+```
+
+This can also be used to specify query parameter for actions:
+
+```haskell
+action ExampleAction = do
+    redirectToPath ((pathTo ShowPostAction { .. }) <> "&details=on")
+```
+
+### Redirect to a URL
+
+Use `redirectToUrl` to redirect to some external URL:
+
+```haskell
+action ExampleAction = do
+    redirectToUrl "https://example.com/hello-world.html"
+```
+
+## Action Execution
+
+When calling a function to send the response, IHP will stop executing the action. Internally this is implemented by throwing and catching a `ResponseException`. Any code after e.g. a `render SomeView { .. }` call will not be called. This also applies to all redirect helpers.
+
+Here is an example of this behavior:
+
+```haskell
+action ExampleAction = do
+    redirectTo SomeOtherAction
+    putStrLn "This line here is not reachable"
+```
+
+The `putStrLn` will never be called because the `redirectTo` already stops execution.

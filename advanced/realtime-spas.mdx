@@ -1,0 +1,532 @@
+---
+title: Real-time SPAs
+description: Build interactive real-time single page applications with IHP DataSync and React
+---
+
+While IHP has a strong preference for server-side rendering, specific functionality in your app might require interactivity that can only be implemented with JavaScript. In these cases we recommend a hybrid approach: implement interactive functionality as a small single page app, while keeping unrelated functionality server-side rendered.
+
+## Introduction
+
+The hybrid approach gives you the best of both worlds: the low interactivity of a single page app where needed, while keeping the simplicity and high performance advantages of server side rendered IHP apps.
+
+This guide will help you understand the best-practices of building hybrid applications with IHP and React.
+
+## Adding React to your IHP Project
+
+<Steps>
+  <Step title="Add NodeJS to your project">
+    Open your project's `flake.nix` and add `nodejs` to `packages`:
+
+    ```nix
+    packages = with pkgs; [
+        # Native dependencies, e.g. imagemagick
+        nodejs
+    ];
+    ```
+
+    Rebuild your local dev environment:
+    ```bash
+    devenv up
+    ```
+
+    After that, you have `node` and `npm` available in your project.
+  </Step>
+
+  <Step title="Create the Frontend directory">
+    ```bash
+    mkdir Frontend
+    ```
+  </Step>
+
+  <Step title="NPM Init">
+    Before installing dependencies, generate a `package.json`:
+
+    ```bash
+    cd Frontend
+    npm init
+    ```
+
+    Add the `Frontend/package.json` and `Frontend/package.lock` to your git repository.
+  </Step>
+
+  <Step title="Install React and dependencies">
+    ```bash
+    cd Frontend
+
+    # Install react and react-dom
+    npm add react react-dom
+
+    # We also need esbuild for bundling
+    npm add esbuild
+
+    # Install IHP JS helpers
+    npm add "https://gitpkg.now.sh/digitallyinduced/ihp/lib/IHP/DataSync?0babfec7a90675ca37d56c38dac69e784e64fc83"
+    ```
+  </Step>
+
+  <Step title="Add an entrypoint">
+    Create a new file `Frontend/app.jsx`:
+
+    ```javascript
+    import * as React from 'react';
+    import * as ReactDOM from 'react-dom';
+
+    import { DataSubscription, createRecord, updateRecord, deleteRecord, createRecords } from 'ihp-datasync/ihp-datasync';
+    import { query } from 'ihp-datasync/ihp-querybuilder';
+    import { useQuery } from 'ihp-datasync/ihp-datasync-react';
+
+    function HelloWorld() {
+        return <div>
+            Hello from react!
+        </div>
+    }
+
+    function startApp() {
+        ReactDOM.render(<HelloWorld/>, document.getElementById('hello-world'));
+    }
+
+    $(document).on('ready turbolinks:load', function () {
+        // This is called on the first page load *and* also when the page is changed by turbolinks
+        startApp();
+    });
+    ```
+  </Step>
+
+  <Step title="Add Make tasks">
+    Open your project's `Makefile` and append these tasks:
+
+    ```Makefile
+    Frontend/node_modules:
+        cd Frontend && npm install
+
+    static/app.js: Frontend/node_modules Frontend/app.jsx
+        cd Frontend && ./node_modules/.bin/esbuild app.jsx --bundle --outfile=../static/app.js ${ESBUILD_FLAGS}
+
+    watch-frontend:
+        touch Frontend/app.jsx # Force rebuild
+        $(MAKE) static/app.js ESBUILD_FLAGS="--watch"
+    ```
+
+    To get the JS automatically built on deployment, append at the top of the file:
+
+    ```Makefile
+    JS_FILES += static/app.js
+    ```
+  </Step>
+
+  <Step title="Run the bundler">
+    Open a new terminal tab and start the dev bundler:
+
+    ```bash
+    make watch-frontend
+    ```
+  </Step>
+
+  <Step title="Mount the React component">
+    Open `Web/Static/Welcome.hs` and add this div:
+
+    ```haskell
+    <div id="hello-world"/>
+    ```
+
+    Open the view in the browser. You should see `Hello from react!` on the page.
+  </Step>
+</Steps>
+
+## Building a Real-time SPA with IHP DataSync
+
+<Note>
+The following section assumes that your app already has a login as described in the [Authentication](https://ihp.digitallyinduced.com/Guide/authentication.html#setup) section.
+</Note>
+
+IHP DataSync provides functions like `query`, `fetchOne` or `createRecord` in JavaScript, similar to the Haskell side.
+
+Example fetching posts:
+
+```javascript
+const posts = await query('posts')
+    .orderBy('createdAt')
+    .fetch()
+```
+
+Compare with Haskell:
+
+```haskell
+posts <- query @Post
+    |> orderBy #createdAt
+    |> fetch
+```
+
+### Setting up the Schema
+
+In this example we're building a simple todo list.
+
+<Steps>
+  <Step title="Create todos table">
+    Create a new table `todos` with the IHP Schema Designer:
+
+    ```sql
+    CREATE TABLE todos (
+        id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        is_completed BOOLEAN DEFAULT false NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+        user_id UUID NOT NULL
+    );
+    CREATE INDEX todos_user_id_index ON todos (user_id);
+    ALTER TABLE todos ADD CONSTRAINT todos_ref_user_id FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE;
+    ```
+
+    Run `Update DB` to insert the new table.
+  </Step>
+
+  <Step title="Add the ihp_authenticated role">
+    IHP DataSync uses Postgres Row Level Security. The default database role is the table owner and can access all rows. DataSync uses a second role called `ihp_authenticated`.
+
+    Open `Config/Config.hs`:
+
+    ```haskell
+    import qualified IHP.DataSync.Role as Role
+
+    config :: ConfigBuilder
+    config = do
+        -- ...
+        addInitializer Role.ensureAuthenticatedRoleExists
+    ```
+  </Step>
+
+  <Step title="Enable the DataSync controllers">
+    Open `Web/FrontController.hs` and add imports:
+
+    ```haskell
+    -- DataSync
+    import IHP.DataSync.Types
+    import IHP.DataSync.Controller
+    import IHP.DataSync.REST.Types
+    import IHP.DataSync.REST.Controller
+    ```
+
+    Mount the controller:
+
+    ```haskell
+    instance FrontController WebApplication where
+        controllers =
+            [ startPage WelcomeAction
+
+            -- DataSync
+            , webSocketApp @DataSyncController
+            , parseRoute @ApiController
+
+            -- Generator Marker
+            ]
+    ```
+
+    Open `Web/Routes.hs` and add:
+
+    ```haskell
+    import IHP.DataSync.REST.Routes
+    ```
+  </Step>
+
+  <Step title="Load the JS SDK">
+    Open `Web/View/Layout.hs` and add these JavaScript files:
+
+    ```haskell
+    scripts :: Html
+    scripts = [hsx|
+            <!-- ... -->
+
+            <!-- DataSync -->
+            <script src={assetPath "/vendor/ihp-datasync.js"}></script>
+            <script src={assetPath "/vendor/ihp-querybuilder.js"}></script>
+
+            <!-- Make sure datasync files are before app.js -->
+            <script src={assetPath "/app.js"}></script>
+        |]
+    ```
+
+    Remove the `helpers.js` from your Layout - it typically causes troubles with React.
+  </Step>
+
+  <Step title="Define a security policy">
+    Open the Schema Designer, select the `todos` table, and click `Add Policy`.
+
+    IHP detected the `user_id` column and auto-suggests:
+
+    - **Visible if:** `user_id = ihp_user_id()`
+    - **Additionally, allow INSERT and UPDATE only if:** `user_id = ihp_user_id()`
+
+    Click `Create Policy` and run `Update DB`.
+  </Step>
+</Steps>
+
+### Fetching Data
+
+Open your app and try this in the JS console:
+
+```javascript
+await query('todos').fetch();
+```
+
+This will return an empty array. Let's create a todo:
+
+```javascript
+await createRecord('todos', { title: 'Hello World!', userId: '<PUT YOUR USER ID HERE>' })
+```
+
+Now fetch again:
+
+```javascript
+await query('todos').fetch();
+```
+
+You'll see the todo in the result.
+
+### Implementing the Todo List
+
+<Steps>
+  <Step title="Display todos">
+    Open `Frontend/app.jsx` and add this component:
+
+    ```javascript
+    function TodoList() {
+        const todos = useQuery(query('todos'));
+
+        if (todos === null) {
+            return <div className="spinner-border text-primary" role="status">
+                <span className="sr-only">Loading...</span>
+            </div>;
+        }
+
+        return <div>
+            {todos.map(todo => <div>{todo.title}</div>)}
+        </div>
+    }
+    ```
+
+    Update `HelloWorld` to render it:
+
+    ```javascript
+    function HelloWorld() {
+        return <div>
+            <TodoList/>
+        </div>
+    }
+    ```
+  </Step>
+
+  <Step title="Add todo form">
+    Add this component:
+
+    ```javascript
+    function NewTodo({ userId }) {
+        let [title, setTitle] = useState("");
+        let [loading, setLoading] = useState(false);
+
+        async function handleSubmit(event) {
+            event.preventDefault();
+
+            setLoading(true);
+            await createRecord('todos', { title: title, userId: userId });
+
+            setLoading(false);
+            setTitle('');
+        }
+
+        return <form onSubmit={handleSubmit} disabled={loading}>
+            <div className="mb-3 d-flex flex-row">
+                <input
+                    type="text"
+                    className="form-control"
+                    placeholder="New todo"
+                    value={title}
+                    onChange={event => setTitle(event.target.value)}
+                    disabled={loading}
+                />
+
+                <button type="submit" className="btn btn-primary" disabled={loading}>Save</button>
+            </div>
+        </form>
+    }
+    ```
+  </Step>
+
+  <Step title="Make it realtime">
+    The `useQuery(query('todos'))` call automatically sets up a subscription. Changes appear in real-time across all browser windows.
+  </Step>
+
+  <Step title="Add checkboxes">
+    Add a `TodoItem` component:
+
+    ```javascript
+    function TodoItem({ todo }) {
+        const todoIdAttr = "todo-" + todo.id;
+
+        return <div className="mb-3 form-check">
+            <input
+                id={todoIdAttr}
+                type="checkbox"
+                checked={todo.isCompleted}
+                onChange={() => updateRecord('todos', todo.id, { isCompleted: !todo.isCompleted })}
+                className="me-2"
+            />
+            <label className="form-check-label" htmlFor={todoIdAttr}>{todo.title}</label>
+        </div>
+    }
+    ```
+
+    Update `TodoList` to use it:
+
+    ```javascript
+    return <div>
+        {todos.map(todo => <TodoItem todo={todo} key={todo.id}/>)}
+    </div>
+    ```
+  </Step>
+
+  <Step title="Add delete button">
+    Add to `TodoItem`:
+
+    ```javascript
+    <button className="btn btn-link text-danger" onClick={() => deleteRecord('todos', todo.id)}>Delete</button>
+    ```
+  </Step>
+</Steps>
+
+## Common DataSync Operations
+
+### Querying Records
+
+```javascript
+const todos = await query('todos').fetch();
+
+for (const todo of todos) {
+    console.log(todo.title);
+}
+```
+
+### Realtime Queries
+
+Use `subscribe` to keep the result set in sync:
+
+```javascript
+function callback(todos) {
+    console.log('todos did change', todos);
+}
+
+const todos = await query('todos').subscribe(callback);
+```
+
+### Filtering
+
+```javascript
+const todos = await query('todos')
+    .where('id', 'd94173ec-1d91-421e-8fdc-20a3161b7802')
+    .fetch()
+
+// Other operators:
+const todos = await query('todos')
+    .whereLessThan('createdAt', '2024-01-01')
+    .whereGreaterThan('priority', 5)
+    .fetch()
+```
+
+### Fetching a Single Record
+
+```javascript
+const todo = await query('todos')
+    .where('id', 'd94173ec-1d91-421e-8fdc-20a3161b7802')
+    .fetchOne();
+
+// Returns null if not found
+```
+
+### Ordering
+
+```javascript
+const latestTodos = await query('todos')
+    .orderByDesc('createdAt')
+    .fetch();
+
+const oldestTodos = await query('todos')
+    .orderBy('createdAt')
+    .fetch();
+```
+
+### Create Record
+
+```javascript
+const newTodo = {
+    title: 'Finish Guide',
+    userId: '49946f4d-8a2e-4f18-a399-58e3296ecff5'
+};
+
+const insertedTodo = await createRecord('todos', newTodo);
+console.log('id', insertedTodo.id);
+```
+
+### Create Many Records
+
+```javascript
+const todoA = { title: 'Finish Guide', userId: '49946f4d-8a2e-4f18-a399-58e3296ecff5' };
+const todoB = { title: 'Learn Haskell', userId: '49946f4d-8a2e-4f18-a399-58e3296ecff5' };
+
+const todos = await createRecords('todos', [todoA, todoB]);
+```
+
+### Update Record By ID
+
+```javascript
+const todo = await updateRecord('todos', '66cc037e-5729-435c-b507-a17492fe44f4', { isCompleted: false });
+```
+
+### Delete Record By ID
+
+```javascript
+await deleteRecord('todos', '66cc037e-5729-435c-b507-a17492fe44f4');
+```
+
+## Using DataSync Without a Bundler
+
+In your `Web/View/Layout.hs` file, add an `importmap`:
+
+```html
+<!-- DataSync -->
+<script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1.4.1/dist/es-module-shims.min.js"></script>
+<script type="importmap">
+    {
+        "imports": {
+            "ihp-datasync/ihp-datasync": "https://cdn.jsdelivr.net/gh/digitallyinduced/ihp@0.17.0/lib/IHP/DataSync/ihp-datasync.min.js",
+            "ihp-datasync/ihp-querybuilder": "https://cdn.jsdelivr.net/gh/digitallyinduced/ihp@0.17.0/lib/IHP/DataSync/ihp-querybuilder.min.js"
+        }
+    }
+</script>
+```
+
+Add `type="module"` to your app.js script:
+
+```html
+<script type="module" src={assetPath "/app.js"}></script>
+```
+
+Inside `app.js`, you can now import:
+
+```javascript
+import {
+  DataSyncController,
+  DataSubscription,
+  createRecord,
+  updateRecord,
+  deleteRecord,
+  createRecords,
+} from "ihp-datasync/ihp-datasync";
+import {
+  QueryBuilder,
+  query,
+  ihpBackendUrl,
+  fetchAuthenticated,
+} from "ihp-datasync/ihp-querybuilder";
+
+const articles = await query("articles").fetch();
+console.log(articles);
+```

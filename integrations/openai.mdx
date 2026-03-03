@@ -1,0 +1,375 @@
+---
+title: OpenAI Integration
+description: Integrate GPT-3 and GPT-4 into your IHP application with streaming completions and automatic retry handling
+---
+
+The `ihp-openai` package provides streaming functions to access GPT-3 and GPT-4 from OpenAI. It's designed to work seamlessly with IHP AutoRefresh and IHP DataSync, enabling real-time AI-powered features in your application.
+
+## Features
+
+- **Streaming Completions**: Stream AI responses in real-time to your users
+- **Automatic Retries**: API calls are retried up to 10 times with seamless continuation
+- **AutoRefresh Integration**: Works perfectly with IHP's AutoRefresh for live updates
+- **Chat API Support**: Built on OpenAI's modern Chat API with GPT-4 support
+- **Resilient**: Retries continue from already-generated tokens, making failures invisible to users
+
+## Installation
+
+<Steps>
+  <Step title="Ensure you're on latest IHP">
+    Make sure you're running on the latest master version of IHP.
+  </Step>
+
+  <Step title="Add the dependency">
+    Open your project's `default.nix` and add `ihp-openai` to your `haskellDeps`:
+
+    ```nix
+    let
+        ihp = ...;
+        haskellEnv = import "${ihp}/NixSupport/default.nix" {
+            ihp = ihp;
+            haskellDeps = p: with p; [
+                cabal-install
+                base
+                wai
+                text
+                hlint
+                p.ihp
+                ihp-openai  # <-- Add this
+            ];
+            otherDeps = p: with p; [
+                # Native dependencies, e.g. imagemagick
+            ];
+            projectPath = ./.;
+        };
+    in
+        haskellEnv
+    ```
+  </Step>
+
+  <Step title="Rebuild your environment">
+    Stop your development server and run:
+
+    ```bash
+    devenv up
+    ```
+  </Step>
+</Steps>
+
+## Basic Example
+
+Here's a complete example showing how to integrate OpenAI into a Questions controller:
+
+```haskell
+module Web.Controller.Questions where
+
+import Web.Controller.Prelude
+import Web.View.Questions.Index
+import Web.View.Questions.New
+import Web.View.Questions.Edit
+import Web.View.Questions.Show
+
+import qualified IHP.OpenAI as GPT
+
+instance Controller QuestionsController where
+    action QuestionsAction = autoRefresh do
+        questions <- query @Question
+            |> orderByDesc #createdAt
+            |> fetch
+        render IndexView { .. }
+
+    action NewQuestionAction = do
+        let question = newRecord
+                |> set #question "What makes haskell so great?"
+        render NewView { .. }
+
+    action CreateQuestionAction = do
+        let question = newRecord @Question
+        question
+            |> fill @'["question"]
+            |> validateField #question nonEmpty
+            |> ifValid \case
+                Left question -> render NewView { .. } 
+                Right question -> do
+                    question <- question |> createRecord
+                    setSuccessMessage "Question created"
+
+                    fillAnswer question
+
+                    redirectTo QuestionsAction
+
+    action DeleteQuestionAction { questionId } = do
+        question <- fetch questionId
+        deleteRecord question
+        setSuccessMessage "Question deleted"
+        redirectTo QuestionsAction
+
+fillAnswer :: (?modelContext :: ModelContext) => Question -> IO (Async ())
+fillAnswer question = do
+    -- Put your OpenAI secret key below:
+    let secretKey = "sk-XXXXXXXX"
+
+    -- This should be done with an IHP job worker instead of async
+    async do 
+        GPT.streamCompletion secretKey 
+            (buildCompletionRequest question) 
+            (clearAnswer question) 
+            (appendToken question)
+        pure ()
+
+buildCompletionRequest :: Question -> GPT.CompletionRequest
+buildCompletionRequest Question { question } =
+    -- Here you can adjust the parameters of the request
+    GPT.newCompletionRequest
+        { GPT.maxTokens = 512
+        , GPT.prompt = [trimming|
+                Question: ${question}
+                Answer:
+        |] }
+
+-- | Sets the answer field back to an empty string
+clearAnswer :: (?modelContext :: ModelContext) => Question -> IO ()
+clearAnswer question = do
+    sqlExec "UPDATE questions SET answer = '' WHERE id = ?" (Only question.id)
+    pure ()
+
+-- | Stores a couple of newly received characters to the database
+appendToken :: (?modelContext :: ModelContext) => Question -> Text -> IO ()
+appendToken question token = do
+    sqlExec "UPDATE questions SET answer = answer || ? WHERE id = ?" (token, question.id)
+    pure ()
+```
+
+## How It Works
+
+### Streaming Architecture
+
+The `streamCompletion` function takes three callbacks:
+
+1. **Clear Callback**: Called before streaming starts to reset the answer field
+2. **Append Callback**: Called with each token as it's generated
+3. **Completion Request**: Configuration for the OpenAI API call
+
+```haskell
+GPT.streamCompletion 
+    secretKey 
+    completionRequest 
+    clearCallback 
+    appendCallback
+```
+
+### Database Schema
+
+For the example above, you'll need a schema like:
+
+```sql
+CREATE TABLE questions (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT DEFAULT '',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+```
+
+### AutoRefresh Integration
+
+Using `autoRefresh` in your action enables real-time updates:
+
+```haskell
+action QuestionsAction = autoRefresh do
+    questions <- query @Question
+        |> orderByDesc #createdAt
+        |> fetch
+    render IndexView { .. }
+```
+
+As tokens are appended to the database, the view automatically refreshes to show the streaming response.
+
+## Configuration Options
+
+### CompletionRequest
+
+Customize the AI behavior:
+
+```haskell
+GPT.newCompletionRequest
+    { GPT.maxTokens = 1024          -- Maximum response length
+    , GPT.prompt = "Your prompt"    -- The input prompt
+    , GPT.temperature = 0.7         -- Randomness (0-1)
+    , GPT.model = "gpt-4"           -- Model selection
+    }
+```
+
+### Available Models
+
+- `gpt-4` - Most capable, slower
+- `gpt-4-turbo` - Fast and capable
+- `gpt-3.5-turbo` - Fast and cost-effective
+
+## Error Handling & Retries
+
+The package automatically handles errors and retries:
+
+- **Up to 10 retries**: Failed API calls are automatically retried
+- **Continuation**: Retries continue from the last successfully generated token
+- **Transparent**: Users never see that a retry occurred
+
+<Note>
+The automatic retry mechanism ensures reliable AI features even with network instability or API rate limits.
+</Note>
+
+## Best Practices
+
+### 1. Use Background Jobs Instead of Async
+
+For production applications, use IHP's job queue instead of `async`:
+
+```haskell
+import Web.Job.FillAnswer
+
+action CreateQuestionAction = do
+    -- ...
+    question <- question |> createRecord
+    
+    -- Schedule a background job
+    newRecord @FillAnswerJob
+        |> set #questionId question.id
+        |> create
+    
+    redirectTo QuestionsAction
+```
+
+### 2. Store API Keys Securely
+
+Never hardcode API keys. Use environment variables:
+
+```haskell
+import System.Environment (getEnv)
+
+fillAnswer question = do
+    secretKey <- getEnv "OPENAI_SECRET_KEY"
+    async do 
+        GPT.streamCompletion secretKey ...
+```
+
+In your `start` script:
+
+```bash
+export OPENAI_SECRET_KEY="sk-..."
+RunDevServer
+```
+
+### 3. Add User Feedback
+
+Show loading states while AI is generating:
+
+```haskell
+[hsx|
+    {forEach questions \question ->
+        <div class="question">
+            <h3>{question.question}</h3>
+            {if isEmpty question.answer
+                then <div class="spinner">Generating answer...</div>
+                else <p>{question.answer}</p>
+            }
+        </div>
+    }
+|]
+```
+
+### 4. Implement Rate Limiting
+
+Protect your API quota:
+
+```haskell
+action CreateQuestionAction = do
+    -- Check user's question count
+    questionCount <- query @Question
+        |> filterWhere (#userId, currentUserId)
+        |> filterWhere (#createdAt, greaterThan (currentTime - 1 hour))
+        |> fetchCount
+    
+    when (questionCount >= 5) do
+        setErrorMessage "Rate limit exceeded. Try again later."
+        redirectTo QuestionsAction
+    
+    -- ... continue with question creation
+```
+
+## Advanced Usage
+
+### Custom Prompts
+
+Create sophisticated prompts:
+
+```haskell
+buildCompletionRequest Question { question, context } =
+    GPT.newCompletionRequest
+        { GPT.maxTokens = 1024
+        , GPT.prompt = [trimming|
+                You are a helpful assistant specialized in Haskell.
+                
+                Context: ${context}
+                
+                Question: ${question}
+                
+                Provide a detailed answer with code examples:
+        |]
+        , GPT.temperature = 0.7
+        }
+```
+
+### Streaming to Multiple Fields
+
+Stream different parts to different fields:
+
+```haskell
+appendToSummary :: Question -> Text -> IO ()
+appendToSummary question token = do
+    sqlExec "UPDATE questions SET summary = summary || ? WHERE id = ?" 
+            (token, question.id)
+
+appendToDetails :: Question -> Text -> IO ()
+appendToDetails question token = do
+    sqlExec "UPDATE questions SET details = details || ? WHERE id = ?" 
+            (token, question.id)
+```
+
+## Troubleshooting
+
+### API Key Errors
+
+If you get authentication errors:
+
+1. Verify your API key is correct
+2. Check that the key has proper permissions
+3. Ensure you haven't exceeded your quota
+
+### Slow Streaming
+
+If responses are slow:
+
+1. Check your internet connection
+2. Try `gpt-3.5-turbo` for faster responses
+3. Reduce `maxTokens` to limit response length
+
+### AutoRefresh Not Working
+
+Ensure:
+
+1. You're using `autoRefresh` in your action
+2. JavaScript is enabled in the browser
+3. The WebSocket connection is established
+
+## Package Information
+
+- **Package**: `ihp-openai`
+- **License**: MIT
+- **Maintainer**: support@digitallyinduced.com
+- **Repository**: https://github.com/digitallyinduced/ihp
+
+## See Also
+
+- [Jobs & Background Workers](/features/jobs)
+- [AutoRefresh](/frontend/auto-refresh)
+- [Database Operations](/database/overview)

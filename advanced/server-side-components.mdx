@@ -1,0 +1,326 @@
+---
+title: Server-Side Components
+description: Build interactive client-side functionality without writing JavaScript using IHP Server-Side Components
+---
+
+IHP Server-Side Components provide a toolkit for building interactive client-side functionality without needing to write too much JavaScript.
+
+## Introduction
+
+A Server-Side Component consists of a state object, a set of actions, and a `render` function.
+
+The typical lifecycle:
+
+1. The component is rendered as part of a view
+2. Elements inside the component can call server-side actions using a simple JavaScript library
+3. On the server-side, actions are evaluated and a new state object is generated
+4. The new state triggers a re-render
+5. The re-rendered content is diffed with existing HTML and update instructions are sent to the client
+6. Repeat at step 2
+7. The component is stopped when the page is closed
+
+<Note>
+The Server-Side Component toolkit has been tested in production environments. While the API is mostly stable, some changes may occur in future versions.
+</Note>
+
+## Creating a Component
+
+In this example we're building a counter component: The counter shows a number. When a button is clicked, the number will be incremented.
+
+<Steps>
+  <Step title="Create the component file">
+    Create a new file at `Web/Component/Counter.hs`:
+
+    ```haskell
+    module Web.Component.Counter where
+
+    import IHP.ViewPrelude
+    import IHP.ServerSideComponent.Types
+    import IHP.ServerSideComponent.ControllerFunctions
+
+    -- The state object
+    data Counter = Counter { value :: !Int }
+
+    -- The set of actions
+    data CounterController
+        = IncrementCounterAction
+        | SetCounterValue { newValue :: !Int }
+        deriving (Eq, Show, Data)
+
+    $(deriveSSC ''CounterController)
+
+    instance Component Counter CounterController where
+        initialState = Counter { value = 0 }
+
+        -- The render function
+        render Counter { value } = [hsx|
+            Current: {value} <br />
+            <button onclick="callServerAction('IncrementCounterAction')">Plus One</button>
+            <hr />
+            <input type="number" value={inputValue value} onchange="callServerAction('SetCounterValue', { newValue: parseInt(this.value, 10) })"/>
+        |]
+        
+        -- The action handlers
+        action state IncrementCounterAction = do
+            state
+                |> incrementField #value
+                |> pure
+
+        action state SetCounterValue { newValue } = do
+            state
+                |> set #value newValue
+                |> pure
+
+    instance SetField "value" Counter Int where setField value' counter = counter { value = value' }
+    ```
+  </Step>
+
+  <Step title="Add to FrontController">
+    Open `Web/FrontController.hs` and add imports:
+
+    ```haskell
+    import IHP.ServerSideComponent.RouterFunctions
+    import Web.Component.Counter
+    ```
+
+    Add `routeComponent @Counter`:
+
+    ```haskell
+    instance FrontController WebApplication where
+        controllers = 
+            [ startPage WelcomeAction
+            -- ...
+            , routeComponent @Counter
+            ]
+    ```
+
+    Now the websocket server for Counter is activated.
+  </Step>
+
+  <Step title="Use the component">
+    Open `Web/View/Static/Welcome.hs` and add imports:
+
+    ```haskell
+    import IHP.ServerSideComponent.ViewFunctions
+    import Web.Component.Counter
+    ```
+
+    Change the welcome view:
+
+    ```haskell
+    instance View WelcomeView where
+        html WelcomeView = [hsx|
+            <h1>Counter</h1>
+
+            {component @Counter}
+        |]
+    ```
+
+    <Note>
+    If this doesn't compile, make sure `TypeApplications` is enabled for the module (add `{-# LANGUAGE TypeApplications #-}` at the top).
+    </Note>
+  </Step>
+
+  <Step title="Load ihp-ssc.js">
+    Open `Web/View/Layout.hs` and add the script:
+
+    ```haskell
+    scripts :: Html
+    scripts = [hsx|
+            <!-- ... -->
+            <script src="/vendor/ihp-ssc.js"></script>
+        |]
+    ```
+  </Step>
+</Steps>
+
+Now when opening the `WelcomeView` you will see the newly created counter.
+
+## Advanced
+
+### Actions with Parameters
+
+Actions can accept parameters:
+
+```haskell
+data BooksTableController
+    = SetSearchQuery { searchQuery :: Text }
+    | SetOrderBy { column :: Text }
+    deriving (Eq, Show, Data, Read)
+```
+
+Call from JavaScript:
+
+```html
+<input
+    type="text"
+    value={inputValue searchQuery}
+    onkeyup="callServerAction('SetSearchQuery', { searchQuery: this.value })"
+/>
+```
+
+### Fetching from the Database
+
+You can use typical IHP database operations like `query @Post` or `createRecord` from your actions.
+
+To fill initial data, use the `componentDidMount` lifecycle function:
+
+```haskell
+data PostsTable = PostsTable
+    { posts :: Maybe [Post]
+    }
+    deriving (Eq, Show)
+
+instance Component PostsTable PostsTableController where
+    initialState = PostsTable { posts = Nothing }
+
+    componentDidMount state = do
+        books <- query @Post |> fetch
+
+        state
+            |> setJust #posts posts
+            |> pure
+
+    render PostsTable { .. } = [hsx|
+        {when (isNothing posts) loadingIndicator}
+        {forEach posts renderPost}
+    |]
+```
+
+The `componentDidMount` gets passed the initial state and returns a new state. It's called right after the first render once the client has wired up the WebSocket connection.
+
+### HTML Diffing & Patching
+
+IHP uses a HTML Diff & Patch approach to update the component's HTML.
+
+When the `Plus One` button is clicked, the client sends:
+
+```javascript
+{"action":"IncrementCounterAction"}
+```
+
+The server responds:
+
+```javascript
+[{"type":"UpdateTextContent","textContent":"Current: 1","path":[0]}]
+```
+
+The server only responds with update instructions that transform `Current: 0` to `Current: 1`.
+
+This is useful if you have many interactive elements controlled by JavaScript libraries (e.g., a `<video>` element). As long as their HTML doesn't change on the server-side, the DOM nodes won't be touched.
+
+### Example Components
+
+See more examples:
+- [IHP SSC Playground](https://github.com/digitallyinduced/ihp-ssc-playground/tree/master/Web/Component)
+- [ihp-ssc-block-editor-demo](https://github.com/digitallyinduced/ihp-ssc-block-editor-demo/blob/master/Web/Component/BlockEditor.hs)
+
+## Error Handling
+
+Server-Side Components include built-in error handling for common failure scenarios.
+
+### Action Errors
+
+When an action handler throws an exception, the error is:
+
+1. Logged on the server with full details
+2. Sent to the client with a generic error message
+3. Displayed to the user temporarily (auto-dismisses after 5 seconds)
+
+```haskell
+action state SomeAction = do
+    -- If this throws an exception, the client will be notified
+    result <- someOperationThatMightFail
+    pure state
+```
+
+### Custom Error Handling
+
+You can listen for SSC errors in JavaScript:
+
+```javascript
+document.addEventListener('ssc:error', function(event) {
+    console.log('SSC Error:', event.detail.error);
+    console.log('Component:', event.detail.component);
+
+    // Implement custom error handling, e.g.:
+    // - Send to error tracking service
+    // - Show custom notification
+});
+```
+
+### Parse Errors
+
+If the client sends an invalid action payload (e.g., malformed JSON or unknown action), the server logs the error and sends an `SSCParseError` to the client.
+
+## Connection Resilience
+
+The SSC JavaScript client automatically handles connection issues.
+
+### Automatic Reconnection
+
+When the WebSocket connection is lost, the client will:
+
+1. Automatically attempt to reconnect with exponential backoff
+2. Show a visual indicator of the connection state
+3. Queue any actions triggered while disconnected
+4. Replay queued actions once reconnected
+
+### Connection States
+
+The client tracks these states:
+
+- **Connecting**: Initial connection in progress
+- **Connected**: WebSocket is open and ready
+- **Reconnecting**: Attempting to restore a lost connection
+- **Failed**: Max reconnection attempts reached
+
+### Visibility Change Handling
+
+When a browser tab becomes visible again, the client will attempt to reconnect if the connection was lost while the tab was in the background.
+
+### Manual Retry
+
+If automatic reconnection fails, a "Retry" button is shown to allow manual reconnection.
+
+## Production Considerations
+
+### WebSocket Scaling
+
+Each SSC component maintains an active WebSocket connection. Consider:
+
+1. **Connection Limits**: Monitor concurrent WebSocket connections per server process
+2. **Sticky Sessions**: Enable session affinity on your load balancer for WebSocket routing
+3. **Timeouts**: Configure appropriate WebSocket timeout settings
+
+### State Management
+
+Component state is held in memory on the server:
+
+1. **State Size**: Keep component state small to minimize memory usage
+2. **Ephemeral State**: Component state is lost when the connection closes or server restarts
+3. **State Recovery**: After reconnection, the component reinitializes with `initialState` and `componentDidMount`
+
+### Monitoring
+
+IHP SSC logs lifecycle events:
+
+- Component connections and disconnections
+- Action execution errors
+- Parse errors from invalid client messages
+
+Enable debug logging in development:
+
+```html
+<script src="/vendor/ihp-ssc.js" data-debug-mode="true"></script>
+```
+
+### Security Considerations
+
+<Warning>
+Always validate action parameters on the server. Never trust client-provided data.
+</Warning>
+
+1. **Action Validation**: Validate all action parameters
+2. **Authorization**: Check user permissions in action handlers for sensitive data
+3. **Rate Limiting**: Consider rate limiting for expensive operations

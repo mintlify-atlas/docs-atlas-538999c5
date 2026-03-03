@@ -1,0 +1,144 @@
+---
+title: Schema Design
+description: Use the IHP Schema Designer to visually design your database schema with tables, columns, and relationships
+---
+
+## Schema Designer
+
+Because the SQL syntax is sometimes hard to remember, the framework provides a GUI-based database editor called IHP Schema Designer. You can find the Schema Designer at `http://localhost:8001/Tables`.
+
+![The Schema Designer in Visual Mode](images/database/schema-designer-visual.png)
+
+Keep in mind that the Schema Editor also only modifies the `Schema.sql`. This works by parsing the SQL DDL-statements and applying transformations on the AST, compiling and writing it back to `Schema.sql`. When there is a syntax error in the `Schema.sql` file the visual mode will be unavailable and you have to work with the code editor to fix the problem.
+
+You can add tables, columns, foreign key constraints, and enums. You can also edit these objects by right-clicking them. New tables have an `id` column by default. Lots of opinionated short-cuts for rapid application development like automatically offering to add foreign key constraints are built-in.
+
+![An example of using the context menu for editing a table](images/database/schema-designer-context-menu.png)
+
+## Switching to Code Mode
+
+When the Visual Editor is not powerful enough, just switch back to the code editor. For convenience, the Schema Designer also allows you to toggle to the Code Editor inside the web browser:
+
+![The Schema Designer in Code Mode](images/database/schema-designer-code.png)
+
+## Push to DB
+
+After we have added a few data structures to our `Schema.sql`, our running Postgres database is still empty. This is because we still need to import our database schema into the database.
+
+<Steps>
+  <Step title="Run make db">
+    Run `make db` while the server is running.
+  </Step>
+  
+  <Step title="Database is Recreated">
+    This will delete and re-create the current database and import the `Schema.sql`. After importing the Schema, it will also import the `Application/Fixtures.sql` which is used for pre-populating the empty database with some data.
+  </Step>
+</Steps>
+
+It's equivalent to running `psql < Schema.sql; psql < Fixtures.sql` inside an empty database.
+
+<Note>
+When the development server is started the first time, the `Schema.sql` and `Fixtures.sql` are automatically imported.
+</Note>
+
+## Fixtures.sql
+
+The `Fixtures.sql` includes a lot of `INSERT INTO` statements to pre-fill your database once the schema has been created.
+
+You can manually add `INSERT INTO` statements to this file. You can also _migrate_ your fixtures by just making the required changes to this SQL file.
+
+You can dump your current database state into the `Fixtures.sql` by running `make dumpdb`. This way you can regularly commit the database state to git, so other developers have the same data inside their local development database as you have.
+
+## Update DB
+
+You can also update the database while keeping its contents.
+
+**In the Schema Designer:** Click on `Migrate DB`:
+
+![Push to DB Button](images/database/schema-designer-migrate-db.png)
+
+**In the command line:** Run `make dumpdb` and after that `make db`.
+
+When dumping the database into the `Fixtures.sql` first and then rebuilding the database with the dump, the contents will be kept when changing the schema.
+
+## Transferring/Backing Up DB
+
+To have the full database dumped in a portable manner, you can do:
+
+```bash
+make sql_dump > /tmp/my_app.sql
+```
+
+This will generate a full SQL database dump, without owner or ACL information.
+
+## Database Updates
+
+The _Update DB_ operation is three steps:
+
+<Steps>
+  <Step title="Save Data to Fixtures">
+    Data is read from the database and stored in `Fixtures.sql`
+  </Step>
+  
+  <Step title="Delete and Recreate Schema">
+    The database is deleted and the schema in `Schema.sql` created
+  </Step>
+  
+  <Step title="Restore Data">
+    The data in `Fixtures.sql` is (re-)inserted.
+  </Step>
+</Steps>
+
+The small arrow on the Update DB button shows a menu where it is possible to just run _Save DB to Fixtures_ (step 1) or _Push to DB_ (steps 2 + 3).
+
+## Making Changes to the Database
+
+The main purpose of the below steps are for keeping the data rows from `Application/Fixtures.sql` between updates. If you are not concerned with keeping these rows when refactoring, feel free to skip this section.
+
+The main reason for the steps outlined below is that changes to the database schema are written to `Application/Schema.sql` only. The actual database is not altered. This means the actual schema and `Schema.sql` will be out of sync.
+
+When the schemas are out of sync, the INSERT statements in `Fixtures.sql` will fail. If this happens, and you attempt to update, the target table will be empty after the update. Try again, and the empty table is read from the database and the data in `Fixtures.sql` is gone.
+
+<Note>
+If you feel this is all a bit less streamlined compared to the rest of the development experience, you are correct. We will work on improving handling changes to the database.
+</Note>
+
+### Adding a Column
+
+#### Nullable or with Default
+
+This is always OK. The existing rows can be re-inserted from your `Fixtures.sql` without errors. After another update cycle, `Fixtures.sql` will also contain the new column.
+
+#### Non-Nullable or Without Default
+
+It's best to do this in two steps. First, follow the above. After updating the DB, fill the column with data and remove the nullable or default properties.
+
+Data can be updated by manually editing the table in the data view or by running UPDATE statements in the custom query field below the data view.
+
+### Renaming a Column
+
+When you are renaming a column, the development process of using `Update DB` will not work. This is because `Update DB` will save the old database state into the `Fixtures.sql`. There it still references the old column names. It will then fail on the next update.
+
+<Steps>
+  <Step title="Rename in Schema Designer">
+    Rename your column `col_a` to `col_b` in the Schema Designer
+  </Step>
+  
+  <Step title="Rename in Database">
+    Rename the column in the database by executing `ALTER TABLE tablename RENAME COLUMN col_a TO col_b` in the custom query field below the data view.
+  </Step>
+</Steps>
+
+### Deleting a Column
+
+Similarly as for renaming, deleting a column currently won't work automatically either.
+
+<Steps>
+  <Step title="Delete in Schema Designer">
+    Delete your column in the Schema Designer
+  </Step>
+  
+  <Step title="Delete in Database">
+    Delete the column from the database by executing `ALTER TABLE tablename DROP COLUMN colname`
+  </Step>
+</Steps>

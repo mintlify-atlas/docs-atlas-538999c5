@@ -1,0 +1,330 @@
+---
+title: Authentication
+description: Build secure user authentication with IHP's built-in authentication toolkit including sessions, password hashing, and email confirmation
+---
+
+IHP provides a complete authentication system with session management, secure password hashing, and optional email confirmation.
+
+## Quick Start: HTTP Basic Auth
+
+For simple use cases, IHP provides HTTP Basic Authentication:
+
+```haskell
+instance Controller WidgetsController where
+    beforeAction = basicAuth "sanja" "hunter2" "myapp"
+```
+
+The parameters are: username, password, and authentication realm.
+
+## Full Authentication Setup
+
+<Note>
+There's an [IHP Casts Episode](https://www.youtube.com/watch?v=vNaJZuVoeuc&list=PLenFm8BWuKlS0IaE31DmKB_PbkMLmwWmG&index=12) covering this documentation.
+</Note>
+
+### Database Schema
+
+Your `users` table needs these fields:
+
+```sql
+CREATE TABLE users (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    email TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    locked_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+    failed_login_attempts INT DEFAULT 0 NOT NULL
+);
+```
+
+<Note>
+Passwords are stored as salted hashes using [pwstore-fast](https://hackage.haskell.org/package/pwstore-fast-2.4.4/docs/Crypto-PasswordStore.html). Users are locked for one hour after 10 failed login attempts.
+</Note>
+
+### Configuration Steps
+
+<Steps>
+  <Step title="Update Web/Types.hs">
+    Add authentication types:
+
+    ```haskell
+    import IHP.LoginSupport.Types
+
+    instance HasNewSessionUrl User where
+        newSessionUrl _ = "/NewSession"
+
+    type instance CurrentUserRecord = User
+
+    data SessionsController
+        = NewSessionAction
+        | CreateSessionAction
+        | DeleteSessionAction
+        deriving (Eq, Show, Data)
+    ```
+  </Step>
+
+  <Step title="Set up routing in Web/Routes.hs">
+    ```haskell
+    instance AutoRoute SessionsController
+    ```
+  </Step>
+
+  <Step title="Create Web/Controller/Sessions.hs">
+    ```haskell
+    module Web.Controller.Sessions where
+
+    import Web.Controller.Prelude
+    import Web.View.Sessions.New
+    import qualified IHP.AuthSupport.Controller.Sessions as Sessions
+
+    instance Controller SessionsController where
+        action NewSessionAction = Sessions.newSessionAction @User
+        action CreateSessionAction = Sessions.createSessionAction @User
+        action DeleteSessionAction = Sessions.deleteSessionAction @User
+
+    instance Sessions.SessionsControllerConfig User
+    ```
+  </Step>
+
+  <Step title="Create login view at Web/View/Sessions/New.hs">
+    ```haskell
+    module Web.View.Sessions.New where
+    import Web.View.Prelude
+    import IHP.AuthSupport.View.Sessions.New
+
+    instance View (NewView User) where
+        html NewView { .. } = [hsx|
+            <div class="h-100" id="sessions-new">
+                <div class="d-flex align-items-center">
+                    <div class="w-100">
+                        <div style="max-width: 400px" class="mx-auto mb-5">
+                            <h5>Please login</h5>
+                            {renderForm user}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        |]
+
+    renderForm :: User -> Html
+    renderForm user = [hsx|
+        <form method="POST" action={CreateSessionAction}>
+            <div class="mb-3">
+                <input name="email" value={user.email} type="email" 
+                       class="form-control" placeholder="E-Mail" 
+                       required="required" autofocus="autofocus" />
+            </div>
+            <div class="mb-3">
+                <input name="password" type="password" 
+                       class="form-control" placeholder="Password"/>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Login</button>
+        </form>
+    |]
+    ```
+  </Step>
+
+  <Step title="Update Web/FrontController.hs">
+    Add imports and mount the session controller:
+
+    ```haskell
+    import IHP.LoginSupport.Middleware
+    import Web.Controller.Sessions
+
+    instance FrontController WebApplication where
+        controllers =
+            [ startPage WelcomeAction
+            , parseRoute @SessionsController
+            -- Generator Marker
+            ]
+
+    instance InitControllerContext WebApplication where
+        initContext = do
+            setLayout defaultLayout
+            initAuthentication @User
+    ```
+  </Step>
+</Steps>
+
+## Using Authentication
+
+### Accessing the Current User
+
+In your controllers:
+
+```haskell
+action MyAction = do
+    let text = "Hello " <> currentUser.email
+    renderPlain text
+```
+
+<Warning>
+Accessing `currentUser` when logged out throws an exception and redirects to the login page.
+</Warning>
+
+For optional authentication:
+
+```haskell
+action MyAction = do
+    case currentUserOrNothing of
+        Just currentUser -> renderPlain ("Hello " <> currentUser.email)
+        Nothing -> renderPlain "Please login first"
+```
+
+In your views:
+
+```haskell
+[hsx|<h1>Hello {currentUser.email}</h1>|]
+```
+
+### Creating Users
+
+Generate a Users controller and implement password hashing:
+
+```haskell
+action CreateUserAction = do
+    let user = newRecord @User
+    let passwordConfirmation = param @Text "passwordConfirmation"
+    user
+        |> fill @["email", "passwordHash"]
+        |> validateField #passwordHash (isEqual passwordConfirmation |> withCustomErrorMessage "Passwords don't match")
+        |> validateField #passwordHash nonEmpty
+        |> validateField #email isEmail
+        |> validateIsUnique #email
+        >>= ifValid \case
+            Left user -> render NewView { .. }
+            Right user -> do
+                hashed <- hashPassword user.passwordHash
+                user <- user
+                    |> set #passwordHash hashed
+                    |> createRecord
+                setSuccessMessage "You have registered successfully"
+                redirectToPath "/"
+```
+
+### Performing Actions on Login
+
+Use `beforeLogin` to run code after authentication but before redirect:
+
+```haskell
+instance Sessions.SessionsControllerConfig User where
+    beforeLogin user = do
+        user
+            |> modify #logins (\count -> count + 1)
+            |> updateRecord
+        pure ()
+```
+
+To block unconfirmed users:
+
+```haskell
+instance Sessions.SessionsControllerConfig User where
+    beforeLogin user = do
+        unless user.isConfirmed do
+            setErrorMessage "Please confirm your email first"
+            redirectTo NewSessionAction
+```
+
+### Logout
+
+Add a logout link:
+
+```haskell
+<a class="js-delete js-delete-no-confirm" href={DeleteSessionAction}>Logout</a>
+```
+
+## Email Confirmation
+
+<Note>
+Email confirmation requires IHP Pro.
+</Note>
+
+Add these columns to your `users` table:
+
+```sql
+CREATE TABLE users (
+    /* ... existing columns ... */
+    confirmation_token TEXT DEFAULT NULL,
+    is_confirmed BOOLEAN DEFAULT false NOT NULL
+);
+```
+
+<Steps>
+  <Step title="Add confirmation action to Web/Types.hs">
+    ```haskell
+    data UsersController
+        = NewUserAction
+        | ConfirmUserAction { userId :: !(Id User), confirmationToken :: !Text }
+        deriving (Eq, Show, Data)
+    ```
+  </Step>
+
+  <Step title="Implement confirmation in Web/Controller/Users.hs">
+    ```haskell
+    import qualified IHP.AuthSupport.Controller.Confirmations as Confirmations
+
+    action ConfirmUserAction { userId, confirmationToken } = 
+        Confirmations.confirmAction userId confirmationToken
+
+    instance Confirmations.ConfirmationsControllerConfig User where
+    ```
+  </Step>
+
+  <Step title="Create confirmation email at Web/Mail/Users/ConfirmationMail.hs">
+    ```haskell
+    module Web.Mail.Users.ConfirmationMail where
+    import Web.View.Prelude
+    import IHP.MailPrelude
+    import IHP.AuthSupport.Confirm
+
+    instance BuildMail (ConfirmationMail User) where
+        subject = "Confirm your Account"
+        to ConfirmationMail { .. } = Address { addressName = Nothing, addressEmail = user.email }
+        from = "noreply@example.com"
+        html ConfirmationMail { .. } = [hsx|
+            Hey,
+            just checking it's you.
+
+            <a href={urlTo (ConfirmUserAction user.id confirmationToken)} target="_blank">
+                Activate your Account
+            </a>
+        |]
+    ```
+  </Step>
+
+  <Step title="Send confirmation email on registration">
+    ```haskell
+    import IHP.AuthSupport.Confirm
+    import Web.Mail.Users.ConfirmationMail
+
+    action CreateUserAction = do
+        -- ... create user ...
+        sendConfirmationMail user
+        setSuccessMessage "Please check your email for a confirmation link"
+        redirectTo NewSessionAction
+    ```
+  </Step>
+
+  <Step title="Block unconfirmed logins in Web/Controller/Sessions.hs">
+    ```haskell
+    import qualified IHP.AuthSupport.Confirm as Confirm
+
+    instance Sessions.SessionsControllerConfig User where
+        beforeLogin user = Confirm.ensureIsConfirmed user
+    ```
+  </Step>
+</Steps>
+
+## Command Line Tools
+
+### Hash a Password
+
+For manual database inserts:
+
+```bash
+$ hash-password
+Enter your password and press enter:
+hunter2
+sha256|17|Y32Ga1uke5CisJvVp6p2sg==|TSDuEs1+Xdaels6TYCkyCgIBHxWA/US7bvBlK0vHzvc=
+```
+
+Or use `hashPassword` in your application code.

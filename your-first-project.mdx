@@ -1,0 +1,524 @@
+---
+title: "Your First Project"
+description: "Build a complete blog application with posts and comments to learn IHP fundamentals"
+---
+
+# Creating Your First Project
+
+This comprehensive tutorial will guide you through building a blog application with IHP. You'll learn about database schemas, controllers, views, and relationships - all the fundamentals of IHP development.
+
+## What You'll Build
+
+By the end of this tutorial, you'll have:
+- A blog with posts (title, body, and timestamps)
+- Markdown support for post content
+- Comments on posts
+- Full CRUD (Create, Read, Update, Delete) operations
+- Form validation
+- Beautiful URLs and routing
+
+## 1. Project Setup
+
+<Steps>
+  <Step title="Create the Blog Project">
+    ```bash
+    ihp-new blog
+    cd blog
+    ```
+    
+    <Note>
+      **First Time Setup**: The first time you run this, it might take 10-15 minutes. Subsequent projects will be much faster as packages are cached.
+    </Note>
+    
+    <Note>
+      **Windows Users**: Make sure you're in the Linux part of the filesystem (not on `/mnt/`), otherwise PostgreSQL will have issues.
+    </Note>
+  </Step>
+  
+  <Step title="Start the Development Server">
+    ```bash
+    devenv up
+    ```
+    
+    Your app will be available at [http://localhost:8000](http://localhost:8000) and development tools at [http://localhost:8001](http://localhost:8001).
+  </Step>
+</Steps>
+
+## 2. Database Schema
+
+### Design the Posts Table
+
+Let's create a `posts` table for our blog. Each post will have:
+- An `id` (UUID, automatically generated)
+- A `title` (text)
+- A `body` (text)
+
+<Steps>
+  <Step title="Open the Schema Designer">
+    Navigate to [http://localhost:8001/Tables](http://localhost:8001/Tables)
+  </Step>
+  
+  <Step title="Create the Posts Table">
+    1. Right-click and select **Add Table**
+    2. Enter `posts` as the table name
+    3. Click **Create Table**
+    
+    The `id` column is automatically created with UUID type.
+  </Step>
+  
+  <Step title="Add the Title Column">
+    1. Right-click in the Columns pane
+    2. Select **Add Column**
+    3. Name: `title`, Type: `TEXT`
+    4. Click **Create Column**
+  </Step>
+  
+  <Step title="Add the Body Column">
+    Repeat the process for `body` (also TEXT type)
+  </Step>
+  
+  <Step title="Migrate the Database">
+    Click **Migrate DB** → **Run Migration** to apply changes to your local database
+  </Step>
+</Steps>
+
+### Understanding the Generated Code
+
+IHP automatically generates Haskell types for your schema. View the generated code in `build/Generated/Types.hs`:
+
+```haskell
+data Post = Post 
+    { id :: Id Post
+    , title :: Text
+    , body :: Text
+    }
+
+newtype Id Post = Id UUID
+```
+
+<Note>
+  The Schema Designer is just a GUI for editing `Application/Schema.sql`. You can always edit this file directly if you prefer.
+</Note>
+
+### Verify the Schema
+
+Check that the table was created:
+
+```bash
+make psql
+```
+
+```sql
+SELECT * FROM posts;
+-- Should show empty table with id, title, body columns
+\q
+```
+
+## 3. Generate the Controller
+
+<Steps>
+  <Step title="Use the Code Generator">
+    In the Schema Designer, right-click on the `posts` table and select **Generate Controller**.
+    
+    Alternatively, go to [http://localhost:8001/Generators](http://localhost:8001/Generators) and click **Controller**.
+  </Step>
+  
+  <Step title="Preview and Generate">
+    1. Enter `Posts` as the controller name
+    2. Click **Preview** to see what will be created
+    3. Click **Generate**
+  </Step>
+  
+  <Step title="View Your New Controller">
+    Open [http://localhost:8000/Posts](http://localhost:8000/Posts) to see the generated CRUD interface.
+  </Step>
+</Steps>
+
+### What Was Generated?
+
+The generator created:
+
+**`Web/Types.hs`** - Action types:
+```haskell
+data PostsController
+    = PostsAction                           -- GET /Posts
+    | NewPostAction                          -- GET /NewPost  
+    | ShowPostAction { postId :: !(Id Post) } -- GET /ShowPost?postId=...
+    | CreatePostAction                       -- POST /CreatePost
+    | EditPostAction { postId :: !(Id Post) } -- GET /EditPost?postId=...
+    | UpdatePostAction { postId :: !(Id Post) } -- POST /UpdatePost?postId=...
+    | DeletePostAction { postId :: !(Id Post) } -- DELETE /DeletePost?postId=...
+```
+
+**`Web/Controller/Posts.hs`** - Controller logic:
+```haskell
+action PostsAction = do
+    posts <- query @Post |> fetch
+    render IndexView { .. }
+
+action ShowPostAction { postId } = do
+    post <- fetch postId
+    render ShowView { .. }
+```
+
+**`Web/View/Posts/`** - View templates using HSX (JSX-like syntax):
+```haskell
+instance View ShowView where
+    html ShowView { .. } = [hsx|
+        <h1>Show Post</h1>
+        <p>{post}</p>
+    |]
+```
+
+## 4. Customize the Views
+
+### Create Your First Post
+
+1. Go to [http://localhost:8000/Posts](http://localhost:8000/Posts)
+2. Click **+ New**
+3. Enter:
+   - Title: `Hello World!`
+   - Body: `Lorem ipsum dolor sit amet, consetetur sadipscing elitr`
+4. Click **Create Post**
+
+### Improve the Show View
+
+Edit `Web/View/Posts/Show.hs`:
+
+```haskell Web/View/Posts/Show.hs
+instance View ShowView where
+    html ShowView { .. } = [hsx|
+        {breadcrumb}
+        <h1>{post.title}</h1>
+        <p>{post.body}</p>
+    |]
+        where
+            breadcrumb = renderBreadcrumb
+                [ breadcrumbLink "Posts" PostsAction
+                , breadcrumbText "Show Post"
+                ]
+```
+
+### Make the Index View Clickable
+
+Edit `Web/View/Posts/Index.hs`:
+
+```haskell
+<td><a href={ShowPostAction post.id}>{post.title}</a></td>
+```
+
+Remove the separate "Show" link and its corresponding `<th>` tag.
+
+## 5. Add Validation
+
+Let's ensure every post has a title. Edit `Web/Controller/Posts.hs`:
+
+```haskell Web/Controller/Posts.hs
+buildPost post = post
+    |> fill @["title","body"]
+    |> validateField #title nonEmpty
+```
+
+Now try to create a post without a title - you'll see a validation error!
+
+<Note>
+  See all available validators in the [API Documentation](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-ValidateField.html).
+</Note>
+
+## 6. Add Timestamps
+
+<Steps>
+  <Step title="Add created_at Column">
+    In the Schema Designer:
+    1. Right-click on `posts` table → **Add Column to Table**
+    2. Name: `created_at`
+    3. Type: `TIMESTAMP`
+    4. Default: `NOW()`
+    5. Click **Create Column**
+  </Step>
+  
+  <Step title="Migrate the Database">
+    Click **Migrate DB** → **Run Migration**
+  </Step>
+  
+  <Step title="Order Posts by Date">
+    Edit `Web/Controller/Posts.hs`:
+    
+    ```haskell
+    action PostsAction = do
+        posts <- query @Post
+            |> orderByDesc #createdAt
+            |> fetch
+        render IndexView { .. }
+    ```
+  </Step>
+  
+  <Step title="Display Relative Time">
+    Edit `Web/View/Posts/Show.hs`:
+    
+    ```haskell
+    <h1>{post.title}</h1>
+    <p>{post.createdAt |> timeAgo}</p>
+    <div>{post.body}</div>
+    ```
+    
+    This shows times like "5 minutes ago".
+  </Step>
+</Steps>
+
+## 7. Add Markdown Support
+
+### Install the mmark Package
+
+Edit `flake.nix` and add `mmark` to `haskellPackages`:
+
+```nix flake.nix
+haskellPackages = p: with p; [
+    p.ihp
+    cabal-install
+    base
+    wai
+    text
+    hlint
+    mmark  # Add this line
+];
+```
+
+Restart the dev server:
+```bash
+# Press CTRL+C, then:
+devenv up
+```
+
+### Implement Markdown Rendering
+
+Edit `Web/View/Posts/Show.hs`:
+
+```haskell Web/View/Posts/Show.hs
+import qualified Text.MMark as MMark
+
+instance View ShowView where
+    html ShowView { .. } = [hsx|
+        {breadcrumb}
+        <h1>{post.title}</h1>
+        <p>{post.createdAt |> timeAgo}</p>
+        <div>{post.body |> renderMarkdown}</div>
+    |]
+
+renderMarkdown :: Text -> Html
+renderMarkdown text =
+    case text |> MMark.parse "" of
+        Left error -> "Something went wrong"
+        Right markdown -> MMark.render markdown |> tshow |> preEscapedToHtml
+```
+
+### Update the Form
+
+Edit both `Web/View/Posts/Edit.hs` and `Web/View/Posts/New.hs`:
+
+```haskell
+renderForm :: Post -> Html
+renderForm post = formFor post [hsx|
+    {(textField #title)}
+    {(textareaField #body) { helpText = "You can use Markdown here"} }
+    {submitButton}
+|]
+```
+
+### Add Markdown Validation
+
+Edit `Web/Controller/Posts.hs`:
+
+```haskell Web/Controller/Posts.hs
+import qualified Text.MMark as MMark
+
+buildPost post = post
+    |> fill @["title","body"]
+    |> validateField #title nonEmpty
+    |> validateField #body nonEmpty
+    |> validateField #body isMarkdown
+
+isMarkdown :: Text -> ValidatorResult
+isMarkdown text =
+    case MMark.parse "" text of
+        Left _ -> Failure "Please provide valid Markdown"
+        Right _ -> Success
+```
+
+## 8. Add Comments
+
+### Create the Comments Table
+
+<Steps>
+  <Step title="Add Comments Table">
+    In the Schema Designer:
+    1. Right-click → **Add Table**
+    2. Name: `comments`
+    3. Add columns:
+       - `post_id` (UUID) - Check "References posts"
+       - `author` (TEXT)
+       - `body` (TEXT)
+       - `created_at` (TIMESTAMP, default: `NOW()`)
+  </Step>
+  
+  <Step title="Configure Foreign Key">
+    Click on "FOREIGN KEY: posts" next to `post_id` to configure the `ON DELETE` behavior.
+  </Step>
+  
+  <Step title="Migrate">
+    Click **Migrate DB** → **Run Migration**
+  </Step>
+</Steps>
+
+### Generate Comments Controller
+
+1. Go to Code Generator
+2. Controller name: `Comments`
+3. Click **Preview** → **Generate**
+
+### Link Comments to Posts
+
+Edit `Web/Types.hs` to add `postId` parameter:
+
+```haskell Web/Types.hs
+data CommentsController
+    = CommentsAction
+    | NewCommentAction { postId :: !(Id Post) }  -- Add postId here
+    | ShowCommentAction { commentId :: !(Id Comment) }
+    | CreateCommentAction
+    | EditCommentAction { commentId :: !(Id Comment) }
+    | UpdateCommentAction { commentId :: !(Id Comment) }
+    | DeleteCommentAction { commentId :: !(Id Comment) }
+```
+
+### Add "Add Comment" Link
+
+Edit `Web/View/Posts/Show.hs`:
+
+```haskell
+<div>{post.body |> renderMarkdown}</div>
+<a href={NewCommentAction post.id}>Add Comment</a>
+```
+
+### Update the New Comment Action
+
+Edit `Web/Controller/Comments.hs`:
+
+```haskell Web/Controller/Comments.hs
+action NewCommentAction { postId } = do
+    let comment = newRecord
+            |> set #postId postId
+    post <- fetch postId
+    render NewView { .. }
+
+action CreateCommentAction = do
+    let comment = newRecord @Comment
+    comment
+        |> buildComment
+        |> ifValid \case
+            Left comment -> do
+                post <- fetch comment.postId
+                render NewView { .. }
+            Right comment -> do
+                comment <- comment |> createRecord
+                setSuccessMessage "Comment created"
+                redirectTo ShowPostAction { postId = comment.postId }
+```
+
+### Update the Comment Form
+
+Edit `Web/View/Comments/New.hs`:
+
+```haskell Web/View/Comments/New.hs
+data NewView = NewView
+    { comment :: Comment
+    , post :: Post
+    }
+
+instance View NewView where
+    html NewView { .. } = [hsx|
+        <h1>New Comment for <q>{post.title}</q></h1>
+        {renderForm comment}
+    |]
+
+renderForm :: Comment -> Html
+renderForm comment = formFor comment [hsx|
+    {(hiddenField #postId)}
+    {(textField #author)}
+    {(textareaField #body)}
+    {submitButton}
+|]
+```
+
+### Display Comments on Posts
+
+Edit `Web/View/Posts/Show.hs`:
+
+```haskell Web/View/Posts/Show.hs
+data ShowView = ShowView { post :: Include "comments" Post }
+
+instance View ShowView where
+    html ShowView { .. } = [hsx|
+        {breadcrumb}
+        <h1>{post.title}</h1>
+        <p>{post.createdAt |> timeAgo}</p>
+        <div>{post.body |> renderMarkdown}</div>
+        
+        <div>{forEach post.comments renderComment}</div>
+        <a href={NewCommentAction post.id}>Add Comment</a>
+    |]
+
+renderComment comment = [hsx|
+    <div class="mt-4">
+        <h5>{comment.author}</h5>
+        <p>{comment.body}</p>
+    </div>
+|]
+```
+
+Edit `Web/Controller/Posts.hs` to fetch comments:
+
+```haskell Web/Controller/Posts.hs
+action ShowPostAction { postId } = do
+    post <- fetch postId
+        >>= pure . modify #comments (orderByDesc #createdAt)
+        >>= fetchRelated #comments
+    render ShowView { .. }
+```
+
+<Note>
+  The `Include "comments"` type tells IHP to fetch the related comments. The `fetchRelated #comments` function executes the query.
+</Note>
+
+## Congratulations!
+
+You've built a complete blog application with:
+- ✅ Posts with Markdown support
+- ✅ Comments with relationships
+- ✅ Form validation
+- ✅ Timestamps and ordering
+- ✅ Full CRUD operations
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Star IHP on GitHub" icon="star" href="https://github.com/digitallyinduced/ihp">
+    Join the IHP community and contribute to the future of type-safe web development
+  </Card>
+  
+  <Card title="Join IHP Slack" icon="slack" href="https://ihp.digitallyinduced.com/Slack">
+    Get help with Haskell type errors and connect with other developers
+  </Card>
+  
+  <Card title="Subscribe to Updates" icon="envelope" href="https://ihp.digitallyinduced.com/MailingList">
+    Stay in the loop with IHP release emails
+  </Card>
+  
+  <Card title="Explore the Guides" icon="book">
+    Learn about routing, views, controllers, forms, and more in The Basics section
+  </Card>
+</CardGroup>
+
+<Note>
+  **Good to know:** To delete an IHP project, just delete the project directory. All dependencies are managed by Nix, so there's no system-wide cleanup needed.
+</Note>

@@ -1,0 +1,253 @@
+---
+title: Configuration
+description: Learn how to configure your IHP application with custom parameters, environment variables, and middleware
+---
+
+At a certain point in the lifetime of your IHP app you will want to add your own config parameters, e.g. for managing secrets, API keys or external services. This guide explains the best practices for doing that.
+
+## Custom Configuration
+
+### Dealing with Secrets
+
+Sometimes you want to have a custom configuration flag inside your application.
+
+The recommended way is to declare a custom `newtype` in `Config/Config.hs` like this:
+
+```haskell
+-- Config.hs
+
+import IHP.EnvVar
+
+newtype StripePublicKey = StripePublicKey Text
+```
+
+We want our new config parameter to be filled from a `STRIPE_PUBLIC_KEY` env variable. Therefore we add this to our Config.hs:
+
+```haskell
+module Config where
+
+import IHP.EnvVar
+
+newtype StripePublicKey = StripePublicKey Text
+
+config :: ConfigBuilder
+config = do
+    -- ...
+    stripePublicKey <- StripePublicKey <$> env @Text "STRIPE_PUBLIC_KEY"
+    option stripePublicKey
+```
+
+Now the app reads the `STRIPE_PUBLIC_KEY` env variable at startup and makes it available to the app.
+
+Before we proceed we should add a default value for this in dev mode. Create a file `.env` and add the following env variables:
+
+```bash
+# Add this at the end of the file
+export STRIPE_PUBLIC_KEY="pk_test_..."
+```
+
+The `.env` is not committed to the repo as it's part of the default `.gitignore` for IHP projects. The `.envrc` has a snippet to load environment variables from `.env` into your shell.
+
+If you are ok to commit your secrets to git repo, you can also put the env vars directly into the `.envrc` file.
+
+#### Using Custom Config Parameters
+
+You can now access the `StripePublicKey` parameter by calling `getAppConfig @Config.StripePublicKey`:
+
+```haskell
+action MyAction = do
+    let (StripePublicKey stripePublicKey) = getAppConfig @Config.StripePublicKey
+
+    putStrLn ("Stripe public key: " <> stripePublicKey)
+```
+
+If you want to fetch it in a helper function, we need to define the `?context`:
+
+```haskell
+getStripePublicKey :: (?context :: ControllerContext) => StripePublicKey
+getStripePublicKey = getAppConfig @Config.StripePublicKey
+```
+
+## Environment Variables
+
+### Reading Environment Variables
+
+Inside `Config/Config.hs` you can use `env` to read environment variables.
+
+```haskell
+module Config where
+
+config :: ConfigBuilder
+config = do
+    someString <- env @Text "SOME_STRING"
+```
+
+The `env` function will raise an error if the env var is not defined.
+
+The `env` function can also deal with other common types:
+
+```haskell
+module Config where
+
+config :: ConfigBuilder
+config = do
+    maxRetryCount <- env @Int "MAX_RETRY_COUNT"
+    byteString <- env @ByteString "SOME_BYTESTRING"
+```
+
+### Default Values
+
+Use `envOrDefault` to provide a default value for an env var:
+
+```haskell
+module Config where
+
+config :: ConfigBuilder
+config = do
+    redisPort <- envOrDefault @Int 6379 "REDIS_PORT"
+```
+
+### Optional Env Variables
+
+When an env variable is optional and has no good default value, use `envOrNothing`. It will return `Nothing` if the env variable is not set:
+
+```haskell
+module Config where
+
+config :: ConfigBuilder
+config = do
+    redisUrl :: Maybe Text <- envOrNothing "REDIS_URL"
+```
+
+### Custom Parser
+
+When you're dealing with a custom enum type it can be useful to write a custom env parser by implementing an `EnvVarReader`:
+
+```haskell
+module Config where
+
+config :: ConfigBuilder
+config = do
+    ipAddrSource :: IPAddrSource <- envOrDefault "IP_ADDR_SOURCE" FromSocket
+
+data IPAddrSource = FromSocket | FromHeader
+
+instance EnvVarReader RequestLogger.IPAddrSource where
+    envStringToValue "FromHeader" = Right RequestLogger.FromHeader
+    envStringToValue "FromSocket" = Right RequestLogger.FromSocket
+    envStringToValue otherwise    = Left "Expected 'FromHeader' or 'FromSocket'"
+```
+
+## Custom Middleware
+
+IHP provides an "escape-hatch" from the framework with the `CustomMiddleware` option.
+This can be used to run any WAI middleware after IHP's middleware stack, allowing for possibilities
+such as embedding a Servant or Yesod app into an IHP app, adding GZIP compression, or any other
+number of possibilities. See [wai-extra](https://hackage.haskell.org/package/wai-extra) for examples
+of WAI middleware that could be added.
+
+The following example sets up a custom middleware that infers the real IP using `X-Forwarded-For`
+and adds a custom header for every request.
+
+```haskell
+module Config where
+
+import Network.Wai.Middleware.AddHeaders (addHeaders)
+import Network.Wai.Middleware.RealIp (realIp)
+
+config :: ConfigBuilder
+config = do
+    option $ CustomMiddleware $ addHeaders [("X-My-Header", "Custom WAI Middleware!")] . realIp
+```
+
+### Compression Middleware
+
+We can compress assets using gzip or brotli.
+
+<Steps>
+  <Step title="Add Haskell dependencies">
+    In your `default.nix` file, add:
+    ```nix
+    haskellDeps = p: with p; [
+        ...
+
+        # Wai Middleware
+        wai-middleware-brotli # <-- Add This Dependency
+        wai-extra # <-- And This One
+    ];
+    ```
+  </Step>
+
+  <Step title="Update environment">
+    Run `devenv up` to update the environment.
+  </Step>
+
+  <Step title="Add imports to Config.hs">
+    ```haskell
+    module Config where
+    ...
+    import Network.Wai.Middleware.Brotli
+    import Network.Wai.Middleware.Gzip
+    ```
+  </Step>
+
+  <Step title="Create compression middleware">
+    Create a function `compressionMiddleware` that combines Gzip and Brotli compression middleware:
+    ```haskell
+    -- | Gzip And Brotli Compression Middleware
+    compressionMiddleware :: CustomMiddleware
+    compressionMiddleware =
+        let
+            -- With `GzipCompress` and `BrotliCompress` options, it will compress per request.
+            gzipSettings = def { gzipFiles = GzipCompress }
+            brotliSettings = defaultSettings { brotliFilesBehavior = BrotliCompress }
+        in
+            CustomMiddleware (gzip gzipSettings . brotli brotliSettings)
+    ```
+  </Step>
+
+  <Step title="Use the middleware">
+    ```haskell
+    config :: ConfigBuilder
+    config = do
+        ...
+        option compressionMiddleware -- <-- Here we add our middleware
+    ```
+  </Step>
+</Steps>
+
+<Note>
+It's important that brotli middleware wraps the gzip middleware, so the responses are not compressed by both. If the client supports brotli, compress with brotli, otherwise gzip, fallback to no compression.
+</Note>
+
+By default all `text/*` content types will be compressed, including `application/json`, `application/javascript`, `application/ecmascript` and `image/x-icon`. Simply put, html, text, css, javascript, json and icons.
+
+## Database Connection Pool
+
+IHP uses two database connection pools:
+
+1. **postgresql-simple pool** - Used for inserts, updates, deletes, and transactions
+2. **hasql pool** - Used for fetch queries with prepared statements (better performance)
+
+### Hasql Pool Configuration
+
+The hasql pool can be configured using environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HASQL_POOL_SIZE` | 3 | Number of connections in the pool |
+| `HASQL_IDLE_TIME` | 600 | Seconds before idle connections are closed |
+
+Example `.env` configuration:
+
+```bash
+# Use a single connection for consistent prepared statement caching
+export HASQL_POOL_SIZE=1
+
+# Keep connections alive for 30 minutes
+export HASQL_IDLE_TIME=1800
+```
+
+### Prepared Statement Caching
+
+PostgreSQL prepared statements are cached per-connection. With multiple connections in the pool, the first query on each connection will re-prepare the statement.

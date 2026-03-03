@@ -1,0 +1,297 @@
+---
+title: IHP.Prelude
+description: Core prelude module providing essential functions and types for IHP applications
+---
+
+## Overview
+
+The `IHP.Prelude` module is the foundation of every IHP application, providing a curated set of commonly-used functions and types. It re-exports functionality from multiple libraries and adds IHP-specific utilities.
+
+This prelude is automatically imported in:
+- `IHP.ControllerPrelude` (for controllers)
+- `IHP.ViewPrelude` (for views)
+- `IHP.RouterPrelude` (for routing)
+- `IHP.MailPrelude` (for mail)
+
+## Core Exports
+
+### Text Operations
+
+IHP uses `Text` as the primary string type instead of `String`.
+
+<ParamField path="show" type="Show a => a -> Text">
+  Convert any showable value to Text.
+  
+  ```haskell
+  show 123 -- Returns: "123"
+  show True -- Returns: "True"
+  ```
+</ParamField>
+
+<ParamField path="tshow" type="Show a => a -> Text">
+  Alias for `show`. Converts any showable value to Text.
+  
+  ```haskell
+  tshow (5 + 3) -- Returns: "8"
+  ```
+</ParamField>
+
+<ParamField path="cs" type="ConvertibleStrings a b => a -> b">
+  Generic string conversion function from `Data.String.Conversions`.
+  
+  ```haskell
+  cs "hello" :: ByteString
+  cs myText :: String
+  ```
+</ParamField>
+
+<ParamField path="(++)" type="Semigroup a => a -> a -> a">
+  Concatenation operator, works with Text, lists, and other semigroups.
+  
+  ```haskell
+  "Hello" ++ " World" -- Returns: "Hello World"
+  [1,2] ++ [3,4] -- Returns: [1,2,3,4]
+  ```
+</ParamField>
+
+### Safe List Functions
+
+IHP provides safe alternatives to Prelude's partial list functions that return `Maybe` instead of throwing errors.
+
+<ParamField path="head" type="[a] -> Maybe a">
+  Safely get the first element of a list.
+  
+  ```haskell
+  head [1,2,3] -- Returns: Just 1
+  head [] -- Returns: Nothing
+  ```
+</ParamField>
+
+<ParamField path="last" type="[a] -> Maybe a">
+  Safely get the last element of a list.
+  
+  ```haskell
+  last [1,2,3] -- Returns: Just 3
+  last [] -- Returns: Nothing
+  ```
+</ParamField>
+
+<ParamField path="tail" type="[a] -> Maybe [a]">
+  Safely get all elements except the first.
+  
+  ```haskell
+  tail [1,2,3] -- Returns: Just [2,3]
+  tail [] -- Returns: Nothing
+  ```
+</ParamField>
+
+<ParamField path="init" type="[a] -> Maybe [a]">
+  Safely get all elements except the last.
+  
+  ```haskell
+  init [1,2,3] -- Returns: Just [1,2]
+  init [] -- Returns: Nothing
+  ```
+</ParamField>
+
+### File System Paths
+
+<ParamField path="OsPath" type="Type">
+  Cross-platform file path type. Use this instead of `String` or `Text` for file paths.
+</ParamField>
+
+<ParamField path="textToOsPath" type="Text -> OsPath">
+  Convert Text to a file system path using UTF-8 encoding.
+  
+  ```haskell
+  let path = textToOsPath "uploads/image.jpg"
+  ```
+</ParamField>
+
+<ParamField path="osPathToText" type="OsPath -> Text">
+  Convert a file system path back to Text.
+  
+  ```haskell
+  let fileName = osPathToText filePath
+  ```
+</ParamField>
+
+### Control Flow
+
+<ParamField path="when" type="Applicative f => Bool -> f () -> f ()">
+  Conditionally execute an action.
+  
+  ```haskell
+  when (age >= 18) $ putStrLn "Adult"
+  ```
+</ParamField>
+
+<ParamField path="unless" type="Applicative f => Bool -> f () -> f ()">
+  Conditionally execute an action when condition is False.
+  
+  ```haskell
+  unless (isEmpty list) $ processItems list
+  ```
+</ParamField>
+
+<ParamField path="mapM" type="(Traversable t, Monad m) => (a -> m b) -> t a -> m (t b)">
+  Map a monadic action over a traversable structure.
+  
+  ```haskell
+  users <- mapM fetchUser userIds
+  ```
+</ParamField>
+
+<ParamField path="forM" type="(Traversable t, Monad m) => t a -> (a -> m b) -> m (t b)">
+  Like `mapM` but with arguments flipped.
+  
+  ```haskell
+  emails <- forM users \user -> pure user.email
+  ```
+</ParamField>
+
+### Model Support
+
+Re-exported from `IHP.ModelSupport` for database operations.
+
+<ParamField path="createRecord" type="CanCreate record => record -> IO record">
+  Insert a new record into the database.
+  
+  ```haskell
+  newUser <- newRecord @User
+      |> set #email "user@example.com"
+      |> createRecord
+  ```
+</ParamField>
+
+<ParamField path="updateRecord" type="CanUpdate record => record -> IO record">
+  Update an existing record in the database.
+  
+  ```haskell
+  user <- fetch userId
+  user
+      |> set #name "New Name"
+      |> updateRecord
+  ```
+</ParamField>
+
+<ParamField path="deleteRecord" type="CanDelete record => record -> IO ()">
+  Delete a record from the database.
+  
+  ```haskell
+  user <- fetch userId
+  deleteRecord user
+  ```
+</ParamField>
+
+### Time Operations
+
+Re-exported from `Data.Time.*` modules.
+
+<ParamField path="UTCTime" type="Type">
+  Absolute time type from `Data.Time.Clock`.
+</ParamField>
+
+<ParamField path="getCurrentTime" type="IO UTCTime">
+  Get the current time.
+  
+  ```haskell
+  now <- getCurrentTime
+  ```
+</ParamField>
+
+<ParamField path="Day" type="Type">
+  Calendar day type from `Data.Time.Calendar`.
+</ParamField>
+
+<ParamField path="LocalTime" type="Type">
+  Local time type (no timezone) from `Data.Time.LocalTime`.
+</ParamField>
+
+### String Interpolation
+
+<ParamField path="plain" type="QuasiQuoter">
+  String interpolation quasi-quoter.
+  
+  ```haskell
+  let name = "Alice"
+  let greeting = [plain|Hello #{name}!|]
+  -- Returns: "Hello Alice!"
+  ```
+</ParamField>
+
+### Exception Handling
+
+<ParamField path="throw" type="Exception e => e -> a">
+  Throw a synchronous exception.
+</ParamField>
+
+<ParamField path="throwIO" type="Exception e => e -> IO a">
+  Throw an exception in IO.
+</ParamField>
+
+<ParamField path="catch" type="Exception e => IO a -> (e -> IO a) -> IO a">
+  Catch exceptions.
+  
+  ```haskell
+  result <- doSomething `catch` \(e :: SomeException) -> 
+      pure defaultValue
+  ```
+</ParamField>
+
+### Concurrency
+
+<ParamField path="async" type="IO a -> IO (Async a)">
+  Run an IO action asynchronously from `Control.Concurrent.Async`.
+  
+  ```haskell
+  task <- async $ fetchFromAPI url
+  result <- wait task
+  ```
+</ParamField>
+
+<ParamField path="wait" type="Async a -> IO a">
+  Wait for an async action to complete.
+</ParamField>
+
+### Type-Level Programming
+
+<ParamField path="Proxy" type="Type -> Type">
+  Proxy type for type-level programming.
+  
+  ```haskell
+  Proxy @User
+  ```
+</ParamField>
+
+<ParamField path="KnownSymbol" type="Constraint">
+  Constraint for type-level strings.
+</ParamField>
+
+<ParamField path="symbolVal" type="KnownSymbol n => proxy n -> String">
+  Get the value of a type-level symbol.
+</ParamField>
+
+## Module Imports
+
+The prelude re-exports from these modules:
+
+- `CorePrelude` - Base functionality
+- `Data.Text` - Text operations
+- `Data.Text.IO` - Text I/O operations
+- `IHP.HaskellSupport` - IHP utilities
+- `IHP.ModelSupport` - Database operations
+- `IHP.NameSupport` - Naming conventions
+- `Data.Time.*` - Time operations
+- `Control.Monad` - Monadic operations
+- `Data.String.Conversions` - String conversions
+- `GHC.Records` - Record field access
+- `GHC.OverloadedLabels` - Label syntax (`#fieldName`)
+- `Control.Exception.Safe` - Safe exception handling
+- `Control.Concurrent.Async` - Asynchronous operations
+
+## See Also
+
+- [Haddock Documentation](https://ihp.digitallyinduced.com/api-docs/IHP-Prelude.html)
+- [Controller Prelude](/api/controller-support)
+- [View Prelude](/api/view-support)

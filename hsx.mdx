@@ -1,0 +1,464 @@
+---
+title: HSX Templating
+description: JSX-like syntax for type-safe HTML templating in Haskell
+---
+
+## Introduction
+
+HSX can be written pretty much like normal HTML. You can write an HSX expression inside your Haskell code by wrapping it with `[hsx|YOUR HSX CODE|]`. HSX expressions are just a syntax for BlazeHtml and thus are automatically escaped as described in the blaze documentation.
+
+Because the HSX is parsed, you will get a syntax error when you type in invalid HTML.
+
+### Inline Haskell
+
+HSX can access Haskell variables wrapped with `{}` like this:
+
+```haskell
+let
+    x :: Text = "World"
+in
+    [hsx|Hello {x}!|]
+```
+
+**If the variable is another HSX expression, a blaze HTML element, a text or string**: it is just included as you would expect.
+
+**If the variable is any other custom Haskell data structure**: it will first be converted to a string representation by calling `show` on it. You can add a custom `ToHtml` instance to customize rendering a data structure.
+
+You can also write more complex code like:
+
+```haskell
+let
+    items :: [Int] = [ 0, 1, 2 ]
+    renderItem n = [hsx|Hello {n}!|]
+in
+    [hsx|Complex demo: {forEach items renderItem}!|]
+```
+
+As the HSX expressions are compiled to Haskell code at compile-time, type errors inside these `{}` expressions will be reported to you by the compiler.
+
+### Dynamic Attributes
+
+The variable syntax can also be used in attribute values:
+
+```haskell
+let
+    inputValue = "Hello World" :: Text
+in
+    [hsx|<input type="text" value={inputValue}/>|]
+```
+
+#### Boolean Attribute Values
+
+HSX has special handling for Boolean values to make it easy to deal with HTML Boolean attributes like `disabled`, `readonly`, `checked`, etc.
+
+<Tabs>
+  <Tab title="True">
+    You can write:
+
+    ```haskell
+    <input disabled={True} />
+    ```
+
+    as a short form for:
+
+    ```haskell
+    <input disabled="disabled" />
+    ```
+  </Tab>
+  <Tab title="False">
+    Writing `False`:
+
+    ```haskell
+    <input disabled={False} />
+    ```
+
+    This will not render the attribute, as specified in the HTML standard:
+
+    ```haskell
+    <input />
+    ```
+  </Tab>
+</Tabs>
+
+#### Boolean data attributes
+
+This behavior of omitting a attribute when it's set to `False` does not apply to `data-` attributes.
+
+You can write:
+
+```haskell
+<form data-disable-javascript-submission={True}/>
+```
+
+and it will render like this:
+
+```html
+<form data-disable-javascript-submission="true"/>
+```
+
+When set to `False`, the output HTML will keep the attribute and set it to `"false"`:
+
+```html
+<form data-disable-javascript-submission="false"/>
+```
+
+#### Maybe Attribute Values / Optional Attributes
+
+HSX has special handling for Maybe values to make it easy to deal with optional attributes.
+
+You can write:
+
+```haskell
+let
+    target :: Maybe Text
+    target = Just "_blank"
+in
+    [hsx|<a target={target} />|]
+```
+
+and it will render to:
+
+```haskell
+<a target="_blank" />
+```
+
+Using `Nothing` results in the `target` attribute not being in the output HTML:
+
+```haskell
+let
+    target :: Maybe Text
+    target = Nothing
+in
+    [hsx|<a target={target} />|]
+```
+
+This will render to:
+
+```haskell
+<a />
+```
+
+### Spread Values
+
+For dynamic use cases you can use `{...attributeList}`:
+
+```haskell
+<div { ...[( "data-my-attribute" :: Text, "Hello World!" :: Text) ] } />
+<div { ...[( "data-user-" <> tshow userId, tshow userFirstname) ] } />
+<div { ...someVariable } />
+```
+
+Note the `<>` concatenation operator.
+
+### Special Elements: `<script>` and `<style>`
+
+For `<script>` and `<style>` tags HSX applies some special handling. This only applies to tags with inline scripts or styles:
+
+```html
+<!-- No Special Handling: -->
+
+<script src="/hello.js"></script>
+<link rel="stylesheet" href="layout.css" />
+
+<!-- Special Handling applies: -->
+
+<script>
+    alert("Hello");
+</script>
+<style>
+    h1 {
+        color: blue;
+    }
+</style>
+```
+
+Inside those tags using a Haskell expression will not work:
+
+```haskell
+<script>{myHaskellExpr}</script>
+```
+
+This will just literally output the string `{myHaskellExpr}` without evaluating the Haskell expression itself. This is because JavaScript usually uses `{}` for object expressions like `{ a: "hello" }`.
+
+Instead use a `data-` attribute to solve this:
+
+```html
+<script data-api-key={apiKey}>
+    var apiKey = document.currentScript.dataset.apiKey;
+</script>
+```
+
+### Syntax Rules
+
+While most HTML is also valid HSX, there are some differences you need to be aware of:
+
+#### Closing Tags
+
+Tags always need to have a closing tag or be self-closing: so instead of `<br>` you need to write `<br/>`.
+
+#### JSX Differences
+
+In JSX you have the restriction that you always have to have a single root tag. In HSX this restriction does not apply, so this is valid HSX (but not valid JSX):
+
+```haskell
+[hsx|
+<div>A</div>
+<div>B</div>
+|]
+```
+
+#### Comments
+
+HTML Comments are supported and can be used like this:
+
+```haskell
+[hsx|
+<div>
+    <!-- Comment will be shown on HTML -->
+    <h1>Hello</h1>
+</div>
+|]
+```
+
+We also support a "no render" comments, that can be used for adding comments inside `hsx`, but without being rendered to HTML:
+
+```haskell
+[hsx|
+    <div>
+        {- Comment will not be shown on HTML -}
+        <h1>Hello</h1>
+    </div>
+|]
+```
+
+Will render to:
+
+```html
+<div>
+    <h1>Hello</h1>
+</div>
+```
+
+#### Empty Attributes
+
+HSX allows you to write empty attributes like these:
+
+```haskell
+[hsx|
+    <input disabled/>
+|]
+```
+
+The underlying HTML library blaze currently does not support an empty HTML attribute. Therefore empty attributes are implemented by setting the attribute value to the attribute name. This is valid HTML supported by all browsers. Therefore the generated HTML looks like this:
+
+```html
+<input disabled="disabled" />
+```
+
+## Common HSX Patterns
+
+### Dealing with Maybe Values
+
+When dealing with `Maybe` values you sometimes want to conditionally render something. In HSX you usually write it like this:
+
+```haskell
+render user = [hsx|
+    <p>Hi {user.name}</p>
+    {renderCountry}
+|]
+    where
+        renderCountry = case user.country of
+            Just country -> [hsx|<p><small>{country}</small></p>|]
+            Nothing -> [hsx||]
+```
+
+What about if the country is a empty string? It's better to deal with the problem at create time of the `User` record already. Use `emptyValueToNothing` to transform an empty `Just ""` to `Nothing` before inserting it into the db:
+
+```haskell
+action CreateUserAction = do
+    newRecord @User
+        |> fill '["name", "country"]
+        |> emptyValueToNothing #country
+        |> createRecord
+```
+
+Now when the country input field is empty when creating the user, the `country` field will be set to `Nothing` instead of `Just ""`.
+
+### Displaying HTML without Escaping
+
+In HSX all variables and expressions are automatically escaped to avoid XSS.
+
+Let's say we have variable `myVariable = "<script>alert(1)</script>"`. This is how the HSX will behave:
+
+```html
+<div>{myVariable}</div>
+
+-- RENDERS to this HTML:
+<div>%3Cscript%3Ealert%281%29%3C/script%3E</div>
+```
+
+Sometimes you want to insert some actual HTML code to your HSX using a variable. E.g. when your app is rendering markdown, the generated HTML by the markdown library should not be escaped.
+
+In these cases you can use `preEscapedToHtml` to mark a text as already escaped:
+
+```html
+<div>{markdownHtml |> preEscapedToHtml}</div>
+
+-- Let's define `markdownHtml = "<p>hello</p>"`
+
+-- This will render the following HTML:
+<div><p>hello</p></div>
+```
+
+<Note>
+Be careful when using `preEscapedToHtml` as it can easily introduce security issues.
+</Note>
+
+The `preEscapedToHtml` function can also be used to output HTML code that is not supported by HSX:
+
+```html
+{"<!--[if IE]> Internet Explorer Conditional Comments <![endif]-->" |> preEscapedToHtml}
+```
+
+#### HTML Attributes without Escaping
+
+Variable attributes are also escaped:
+
+```haskell
+html = [hsx|
+    <div class={style}>
+        Hello World
+    </div>
+|]
+    where
+        style = "someClassName&" :: Text
+```
+
+The above code will generate the following HTML, where the `&` symbol has been replaced with it's escaped form `&amp;`:
+
+```html
+<div class="someClassName&amp;">Hello World</div>
+```
+
+You might want to have this `&` character not escaped. E.g. to use Tailwind Arbitrary Variants. In that case wrap the attribute value with a call to `preEscapedTextValue`:
+
+```haskell
+html = [hsx|
+    <div class={style}>
+        Hello World
+    </div>
+|]
+    where
+        style = preEscapedTextValue "someClassName&"
+```
+
+The HTML will now render without escaping the attribute:
+
+```html
+<div class="someClassName&">Hello World</div>
+```
+
+<Note>
+Keep in mind that you're now responsible for making sure that there's no bad input inside the string passed to `preEscapedTextValue`. You might accidentally open the door for XSS.
+</Note>
+
+## Custom HSX and Unchecked HSX
+
+HSX provides two additional QuasiQuoters beyond the standard `[hsx|...|]` for increased flexibility: `uncheckedHsx` and `customHsx`.
+
+### Using `uncheckedHsx`
+
+`uncheckedHsx` provides a quick way to bypass HSX's strict tag and attribute name checking.
+
+It will still check for a valid HTML structure, but it will accept any tag and attribute names.
+
+```haskell
+[uncheckedHsx|
+    <anytagname custom-attribute="value">
+        Content
+    </anytagname>
+|]
+```
+
+While convenient for rapid development, use it with caution as you lose the benefits of compile-time guarantees for your markup.
+
+### Using `customHsx`
+
+`customHsx` allows you to extend the default HSX with additional whitelisted tag names and attribute names while maintaining the same strict compile-time checking of the default `hsx`.
+
+This makes it easier to use custom elements that often also contain special attributes, and javascript libraries, for example `_hyperscript`, that use the `_` as an attribute name.
+
+<Steps>
+  <Step title="Create a custom HSX module">
+    First, create a new module for your custom HSX (e.g., `Application.Helper.CustomHsx`):
+
+    ```haskell
+    module Application.Helper.CustomHsx where
+
+    import IHP.Prelude
+    import IHP.HSX.QQ (customHsx)
+    import IHP.HSX.Parser
+    import Language.Haskell.TH.Quote
+    import qualified Data.Set as Set
+
+    myHsx :: QuasiQuoter
+    myHsx = customHsx
+        (HsxSettings
+            { checkMarkup = True
+            , additionalTagNames = Set.fromList ["book", "heading", "name"]
+            , additionalAttributeNames = Set.fromList ["_", "custom-attribute"]
+            }
+        )
+    ```
+
+    Configuration options for `HsxSettings`:
+    - `checkMarkup`: Boolean to enable/disable markup checking
+    - `additionalTagNames`: Set of additional allowed tag names
+    - `additionalAttributeNames`: Set of additional allowed attribute names
+  </Step>
+
+  <Step title="Make it available in your views">
+    Add it to your view helpers module:
+
+    ```haskell
+    module Application.Helper.View (
+        module Application.Helper.View,
+        module Application.Helper.CustomHsx -- Add this line
+    ) where
+
+    import IHP.ViewPrelude
+    import Application.Helper.CustomHsx (myHsx) -- Add this line
+    ```
+  </Step>
+
+  <Step title="Use it in your views">
+    ```haskell
+    [myHsx|
+        <book _="on click log 'Hello'">
+            <heading custom-attribute="value">My Book</heading>
+            <name>Author Name</name>
+        </book>
+    |]
+    ```
+  </Step>
+</Steps>
+
+The custom HSX will validate that tags and attributes are either in the default HSX whitelist or in your additional sets. This gives you the flexibility to use custom elements and attributes.
+
+This approach is particularly useful for:
+- Web Components with custom attribute names
+- UI libraries with non-standard attributes
+- Domain-specific XML markup languages
+- Integration with third-party frameworks that extend HTML syntax
+
+<Note>
+`customHsx` whitelisting and even `uncheckedHsx` does not entirely help for libraries with very unusual symbols in their attributes, like Alpine.js, because they don't recognize html attributes starting with `@` or has `:` in the attribute name. In these cases, the spread syntax `{...attributeList}` is likely your best bet.
+
+```haskell
+-- This will not work
+[uncheckedHsx|<button @click="open = true">Expand</button>|]
+
+-- Using spread syntax will work
+[hsx|<button {...[("@click", "open = true" :: Text)]}>Expand</button>|]
+```
+</Note>

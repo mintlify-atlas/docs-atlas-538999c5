@@ -1,0 +1,285 @@
+---
+title: Email Sending
+description: Send emails from IHP applications using built-in mail functionality with support for SMTP, AWS SES, SendGrid, and local sendmail
+---
+
+IHP provides email functionality via the `ihp-mail` package, built on top of [mime-mail](https://hackage.haskell.org/package/mime-mail).
+
+## Setup
+
+Add `ihp-mail` to your `flake.nix`:
+
+```nix
+haskellPackages = p: with p; [
+    p.ihp
+    cabal-install
+    base
+    wai
+    ihp-mail  # Add this
+];
+```
+
+Rebuild with `devenv up` or restart the development server.
+
+## Generating Email Templates
+
+<Steps>
+  <Step title="Open the Mail Code Generator">
+    Access it from the IHP development tools.
+  </Step>
+
+  <Step title="Select controller and name">
+    Choose the controller (e.g., `Users`) and enter the mail name (e.g., `Confirmation`).
+  </Step>
+
+  <Step title="Generate the template">
+    Click Preview, then Generate to create `Web/Mail/Users/Confirmation.hs`.
+  </Step>
+</Steps>
+
+Generated template:
+
+```haskell
+module Web.Mail.Users.Confirmation where
+import Web.View.Prelude
+import IHP.MailPrelude
+
+data ConfirmationMail = ConfirmationMail { user :: User }
+
+instance BuildMail ConfirmationMail where
+    subject = "Subject"
+    to ConfirmationMail { .. } = Address { 
+        addressName = Just "F L", 
+        addressEmail = "fname.lname@example.com" 
+    }
+    from = "hi@example.com"
+    html ConfirmationMail { .. } = [hsx|
+        Hello World
+    |]
+```
+
+## Customizing Email Templates
+
+### Subject Line
+
+```haskell
+subject = "Confirm your Account"
+```
+
+### Recipient
+
+Use user data:
+
+```haskell
+to ConfirmationMail { .. } = Address { 
+    addressName = Just user.name, 
+    addressEmail = user.email 
+}
+```
+
+### Sender
+
+```haskell
+from = "noreply@yourdomain.com"
+```
+
+### Reply-To Address
+
+```haskell
+replyTo ConfirmationMail { .. } = Just Address { 
+    addressName = Just "Support", 
+    addressEmail = "support@example.com" 
+}
+```
+
+### Email Content
+
+HTML version:
+
+```haskell
+html ConfirmationMail { .. } = [hsx|
+    Hey {user.name}, <br/>
+    Thanks for signing up! Please confirm your account by following this link: <br/>
+    <a href={urlTo ConfirmUserAction}>Confirm Account</a>
+|]
+```
+
+Plain text version (recommended):
+
+```haskell
+text ConfirmationMail { .. } = cs [trimming|
+    Hey ${userName},
+
+    Thanks for signing up! Please confirm your account by following this link:
+    https://example.com/confirm
+|]
+    where
+        userName = user.name
+```
+
+<Note>
+Providing a plain text version improves deliverability and accessibility. If omitted, IHP auto-generates one by stripping HTML tags.
+</Note>
+
+## Sending Emails
+
+From a controller or script:
+
+```haskell
+import IHP.Mail (sendMail)
+
+action MyAction = do
+    user <- fetch "..."
+    sendMail ConfirmationMail { user }
+```
+
+## Mail Server Configuration
+
+Configure in `Config/Config.hs`:
+
+### Local Sendmail
+
+```haskell
+import IHP.Mail.Types
+
+config :: ConfigBuilder
+config = do
+    option Development
+    option Sendmail
+```
+
+### SMTP
+
+```haskell
+import IHP.Mail.Types
+
+config :: ConfigBuilder
+config = do
+    option $ SMTP
+        { host = "smtp.myisp.com"
+        , port = 2525
+        , credentials = Just ("myusername", "hunter2")
+        , encryption = TLS  -- or: Unencrypted, STARTTLS
+        }
+```
+
+### Environment Variables for SMTP
+
+Recommended for production:
+
+```haskell
+import IHP.Mail.Types
+import Network.Socket (PortNumber)
+import IHP.EnvVar
+
+config :: ConfigBuilder
+config = do
+    smtpHost <- env @Text "SMTP_HOST"
+    smtpPort <- env @PortNumber "SMTP_PORT"
+    smtpEncryption <- env @SMTPEncryption "SMTP_ENCRYPTION"
+    
+    smtpUserMaybe <- envOrNothing "SMTP_USER"
+    smtpPasswordMaybe <- envOrNothing "SMTP_PASSWORD"
+    
+    let smtpCredentials = case (smtpUserMaybe, smtpPasswordMaybe) of
+            (Just user, Just password) -> Just (user, password)
+            _ -> Nothing
+    
+    option $ SMTP
+        { host = cs smtpHost
+        , port = smtpPort
+        , credentials = smtpCredentials
+        , encryption = smtpEncryption
+        }
+```
+
+In `.envrc`:
+
+```bash
+export SMTP_HOST="127.0.0.1"
+export SMTP_PORT="1025"
+export SMTP_ENCRYPTION="Unencrypted"
+export SMTP_USER="username"
+export SMTP_PASSWORD="password"
+```
+
+### AWS SES
+
+```haskell
+import IHP.Mail.Types
+
+config :: ConfigBuilder
+config = do
+    option $ SES
+        { accessKey = "YOUR_AWS_ACCESS_KEY"
+        , secretKey = "YOUR_AWS_SECRET_KEY"
+        , region = "eu-west-1"
+        }
+```
+
+### SendGrid
+
+```haskell
+import IHP.Mail.Types
+
+config :: ConfigBuilder
+config = do
+    option $ SendGrid
+        { apiKey = "YOUR_SENDGRID_API_KEY"
+        , category = Nothing  -- or: Just "mailcategory"
+        }
+```
+
+### MailHog (Development)
+
+MailHog captures outgoing emails for testing:
+
+1. Install and run MailHog
+2. Configure SMTP to point to MailHog (default: `127.0.0.1:1025`)
+3. View emails at `http://0.0.0.0:8025/`
+
+```bash
+# .envrc
+export SMTP_HOST="127.0.0.1"
+export SMTP_PORT="1025"
+export SMTP_ENCRYPTION="Unencrypted"
+```
+
+## Advanced Features
+
+### Custom Headers
+
+```haskell
+headers ConfirmationMail { .. } =
+    [ ("X-Mailer", "IHP Application")
+    , ("In-Reply-To", "<123456@list.example.com>")
+    ]
+```
+
+### Email Attachments
+
+```haskell
+instance BuildMail ConfirmationMail where
+    subject = "Your Receipt"
+    to ConfirmationMail { .. } = Address { 
+        addressName = Just user.name, 
+        addressEmail = user.email 
+    }
+    from = "noreply@example.com"
+    
+    html ConfirmationMail { .. } = [hsx|
+        Please find your receipt attached.
+    |]
+    
+    attachments ConfirmationMail { .. } = [
+        MailAttachment { 
+            name = "receipt.pdf", 
+            contentType = "application/pdf", 
+            content = pdfContent 
+        }
+    ]
+```
+
+<Warning>
+Remember to configure SPF and DKIM records for your domain to ensure reliable email delivery.
+</Warning>

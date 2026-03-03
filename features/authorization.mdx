@@ -1,0 +1,112 @@
+---
+title: Authorization
+description: Control access to your IHP application with built-in authorization helpers for restricting actions to logged-in users and admins
+---
+
+IHP provides simple authorization helpers to restrict access to actions based on user authentication status and permissions.
+
+## Requiring Login
+
+Use `ensureIsUser` to restrict an action to logged-in users:
+
+```haskell
+action PostsAction = do
+    ensureIsUser
+    posts <- query @Post |> fetch
+    render IndexView { .. }
+```
+
+<Note>
+When an unauthenticated user tries to access a protected action, they're redirected to the login page. After successful login, they're redirected back to the original page.
+</Note>
+
+## Protecting All Actions in a Controller
+
+Place `ensureIsUser` in the `beforeAction` hook to protect all actions:
+
+```haskell
+instance Controller PostsController where
+    beforeAction = ensureIsUser
+
+    action PostsAction = do
+        posts <- query @Post |> fetch
+        render IndexView { .. }
+
+    action ShowPostAction { postId } = do
+        post <- fetch postId
+        render ShowView { .. }
+```
+
+Both `PostsAction` and `ShowPostAction` now require authentication.
+
+## Restricting to Admins
+
+Use `ensureIsAdmin` to restrict actions to administrators:
+
+```haskell
+instance Controller UserController where
+    beforeAction = ensureIsAdmin @Admin
+```
+
+<Warning>
+If you get a type error about `HasNewSessionUrl admin0`, you may need to explicitly annotate the admin type with `@Admin`.
+</Warning>
+
+## Custom Permissions
+
+Use `accessDeniedUnless` to implement custom authorization logic:
+
+```haskell
+action ShowPostAction { postId } = do
+    post <- fetch postId
+    accessDeniedUnless (post.userId == currentUserId)
+    
+    render ShowView { .. }
+```
+
+This ensures users can only view their own posts.
+
+## Common Patterns
+
+### Resource Ownership
+
+```haskell
+action EditPostAction { postId } = do
+    post <- fetch postId
+    accessDeniedUnless (post.userId == currentUserId)
+    render EditView { .. }
+
+action UpdatePostAction { postId } = do
+    post <- fetch postId
+    accessDeniedUnless (post.userId == currentUserId)
+    
+    post
+        |> buildPost
+        |> ifValid \case
+            Left post -> render EditView { .. }
+            Right post -> do
+                post <- post |> updateRecord
+                redirectTo ShowPostAction { .. }
+```
+
+### Role-Based Access
+
+```haskell
+action AdminDashboardAction = do
+    ensureIsUser
+    accessDeniedUnless (currentUser.role == "admin")
+    render DashboardView
+```
+
+### Combining Conditions
+
+```haskell
+action DeletePostAction { postId } = do
+    post <- fetch postId
+    let isOwner = post.userId == currentUserId
+    let isAdmin = currentUser.role == "admin"
+    accessDeniedUnless (isOwner || isAdmin)
+    
+    deleteRecord post
+    redirectTo PostsAction
+```

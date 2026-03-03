@@ -1,0 +1,468 @@
+---
+title: IHP.QueryBuilder
+description: Type-safe SQL query builder for composing database queries
+---
+
+## Overview
+
+The `IHP.QueryBuilder` module provides a type-safe, composable way to build SQL queries. It's the foundation for querying your database in IHP applications.
+
+Key features:
+- Type-safe query construction
+- Composable query builders using the `|>` operator
+- Support for filtering, ordering, pagination, and joins
+- Compile-time guarantees for query correctness
+
+For complex SQL queries, use `sqlQuery` from `IHP.ModelSupport`.
+
+## Creating Queries
+
+<ParamField path="query" type="QueryBuilder table">
+  Create a new query builder.
+  
+  ```haskell
+  -- Without type annotation (type inferred from usage)
+  let q = query
+  
+  -- With explicit type
+  let projectQuery = query @Project
+  ```
+</ParamField>
+
+## Fetching Results
+
+<ParamField path="fetch" type="QueryBuilder table -> IO [table]">
+  Fetch multiple rows.
+  
+  ```haskell
+  projects <- query @Project |> fetch
+  -- SQL: SELECT * FROM projects
+  ```
+</ParamField>
+
+<ParamField path="fetchOne" type="QueryBuilder table -> IO table">
+  Fetch a single row. Throws an error if no record is found.
+  
+  ```haskell
+  project <- query @Project 
+      |> filterWhere (#id, projectId)
+      |> fetchOne
+  -- SQL: SELECT * FROM projects WHERE id = ? LIMIT 1
+  ```
+</ParamField>
+
+<ParamField path="fetchOneOrNothing" type="QueryBuilder table -> IO (Maybe table)">
+  Fetch a single row or Nothing if not found.
+  
+  ```haskell
+  maybeProject <- query @Project
+      |> filterWhere (#slug, "my-project")
+      |> fetchOneOrNothing
+  -- SQL: SELECT * FROM projects WHERE slug = ? LIMIT 1
+  ```
+</ParamField>
+
+## Filtering
+
+### Basic Filters
+
+<ParamField path="filterWhere" type="(KnownSymbol field, ToField value) => (Proxy field, value) -> QueryBuilder table -> QueryBuilder table">
+  Add a WHERE condition.
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhere (#userId, userId)
+      |> filterWhere (#deleted, False)
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE user_id = ? AND deleted = false
+  ```
+</ParamField>
+
+<ParamField path="filterWhereNot" type="(KnownSymbol field, ToField value) => (Proxy field, value) -> QueryBuilder table -> QueryBuilder table">
+  Add a negated WHERE condition.
+  
+  ```haskell
+  otherProjects <- query @Project
+      |> filterWhereNot (#userId, currentUserId)
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE user_id != ?
+  ```
+</ParamField>
+
+<ParamField path="filterWhereCaseInsensitive" type="(KnownSymbol field, ToField value) => (Proxy field, value) -> QueryBuilder table -> QueryBuilder table">
+  Case-insensitive WHERE condition.
+  
+  ```haskell
+  user <- query @User
+      |> filterWhereCaseInsensitive (#email, email)
+      |> fetchOneOrNothing
+  -- SQL: SELECT * FROM users WHERE LOWER(email) = LOWER(?)
+  ```
+</ParamField>
+
+### Range Filters
+
+<ParamField path="filterWhereIn" type="(KnownSymbol field, ToField value) => (Proxy field, [value]) -> QueryBuilder table -> QueryBuilder table">
+  Filter by a list of values (IN clause).
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhereIn (#status, ["active", "pending"])
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE status IN (?, ?)
+  ```
+</ParamField>
+
+<ParamField path="filterWhereNotIn" type="(KnownSymbol field, ToField value) => (Proxy field, [value]) -> QueryBuilder table -> QueryBuilder table">
+  Filter by excluded values (NOT IN clause).
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhereNotIn (#status, ["deleted", "archived"])
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE status NOT IN (?, ?)
+  ```
+</ParamField>
+
+<ParamField path="filterWhereIdIn" type="(Proxy field, [Id' table]) -> QueryBuilder table -> QueryBuilder table">
+  Filter by a list of IDs.
+  
+  ```haskell
+  users <- query @User
+      |> filterWhereIdIn (#id, userIds)
+      |> fetch
+  -- SQL: SELECT * FROM users WHERE id IN (?, ?, ?)
+  ```
+</ParamField>
+
+### Pattern Matching
+
+<ParamField path="filterWhereLike" type="(KnownSymbol field) => (Proxy field, Text) -> QueryBuilder table -> QueryBuilder table">
+  SQL LIKE pattern matching (case-sensitive).
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhereLike (#title, "%website%")
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE title LIKE ?
+  ```
+</ParamField>
+
+<ParamField path="filterWhereILike" type="(KnownSymbol field) => (Proxy field, Text) -> QueryBuilder table -> QueryBuilder table">
+  SQL ILIKE pattern matching (case-insensitive).
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhereILike (#title, "%WEBSITE%")
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE title ILIKE ?
+  ```
+</ParamField>
+
+### Comparison Filters
+
+<ParamField path="filterWhereGreaterThan" type="(KnownSymbol field, ToField value) => (Proxy field, value) -> QueryBuilder table -> QueryBuilder table">
+  Filter by greater than.
+  
+  ```haskell
+  expensiveProjects <- query @Project
+      |> filterWhereGreaterThan (#budget, 10000)
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE budget > ?
+  ```
+</ParamField>
+
+<ParamField path="filterWhereGreaterThanOrEqualTo" type="(KnownSymbol field, ToField value) => (Proxy field, value) -> QueryBuilder table -> QueryBuilder table">
+  Filter by greater than or equal to.
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhereGreaterThanOrEqualTo (#budget, 5000)
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE budget >= ?
+  ```
+</ParamField>
+
+<ParamField path="filterWhereLessThan" type="(KnownSymbol field, ToField value) => (Proxy field, value) -> QueryBuilder table -> QueryBuilder table">
+  Filter by less than.
+  
+  ```haskell
+  smallProjects <- query @Project
+      |> filterWhereLessThan (#teamSize, 5)
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE team_size < ?
+  ```
+</ParamField>
+
+<ParamField path="filterWhereLessThanOrEqualTo" type="(KnownSymbol field, ToField value) => (Proxy field, value) -> QueryBuilder table -> QueryBuilder table">
+  Filter by less than or equal to.
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhereLessThanOrEqualTo (#teamSize, 10)
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE team_size <= ?
+  ```
+</ParamField>
+
+### Time-based Filters
+
+<ParamField path="filterWherePast" type="KnownSymbol field => Proxy field -> QueryBuilder table -> QueryBuilder table">
+  Filter for dates in the past.
+  
+  ```haskell
+  pastEvents <- query @Event
+      |> filterWherePast #eventDate
+      |> fetch
+  -- SQL: SELECT * FROM events WHERE event_date < NOW()
+  ```
+</ParamField>
+
+<ParamField path="filterWhereFuture" type="KnownSymbol field => Proxy field -> QueryBuilder table -> QueryBuilder table">
+  Filter for dates in the future.
+  
+  ```haskell
+  upcomingEvents <- query @Event
+      |> filterWhereFuture #eventDate
+      |> fetch
+  -- SQL: SELECT * FROM events WHERE event_date > NOW()
+  ```
+</ParamField>
+
+### Custom SQL Filters
+
+<ParamField path="filterWhereSql" type="(ByteString, [Action]) -> QueryBuilder table -> QueryBuilder table">
+  Add a custom SQL WHERE condition.
+  
+  ```haskell
+  projects <- query @Project
+      |> filterWhereSql ("budget * 1.1 > ?", [toField maxBudget])
+      |> fetch
+  -- SQL: SELECT * FROM projects WHERE budget * 1.1 > ?
+  ```
+</ParamField>
+
+## Ordering
+
+<ParamField path="orderBy" type="KnownSymbol field => Proxy field -> QueryBuilder table -> QueryBuilder table">
+  Order by a field (ascending by default).
+  
+  ```haskell
+  projects <- query @Project
+      |> orderBy #createdAt
+      |> fetch
+  -- SQL: SELECT * FROM projects ORDER BY created_at
+  ```
+</ParamField>
+
+<ParamField path="orderByAsc" type="KnownSymbol field => Proxy field -> QueryBuilder table -> QueryBuilder table">
+  Order by a field in ascending order.
+  
+  ```haskell
+  projects <- query @Project
+      |> orderByAsc #title
+      |> fetch
+  -- SQL: SELECT * FROM projects ORDER BY title ASC
+  ```
+</ParamField>
+
+<ParamField path="orderByDesc" type="KnownSymbol field => Proxy field -> QueryBuilder table -> QueryBuilder table">
+  Order by a field in descending order.
+  
+  ```haskell
+  recentProjects <- query @Project
+      |> orderByDesc #createdAt
+      |> fetch
+  -- SQL: SELECT * FROM projects ORDER BY created_at DESC
+  ```
+</ParamField>
+
+## Pagination
+
+<ParamField path="limit" type="Int -> QueryBuilder table -> QueryBuilder table">
+  Limit the number of results.
+  
+  ```haskell
+  topProjects <- query @Project
+      |> orderByDesc #stars
+      |> limit 10
+      |> fetch
+  -- SQL: SELECT * FROM projects ORDER BY stars DESC LIMIT 10
+  ```
+</ParamField>
+
+<ParamField path="offset" type="Int -> QueryBuilder table -> QueryBuilder table">
+  Skip a number of results.
+  
+  ```haskell
+  page2Projects <- query @Project
+      |> orderBy #title
+      |> limit 20
+      |> offset 20
+      |> fetch
+  -- SQL: SELECT * FROM projects ORDER BY title LIMIT 20 OFFSET 20
+  ```
+</ParamField>
+
+## Deduplication
+
+<ParamField path="distinct" type="QueryBuilder table -> QueryBuilder table">
+  Remove duplicate rows.
+  
+  ```haskell
+  uniqueProjects <- query @Project
+      |> distinct
+      |> fetch
+  -- SQL: SELECT DISTINCT * FROM projects
+  ```
+</ParamField>
+
+<ParamField path="distinctOn" type="KnownSymbol field => Proxy field -> QueryBuilder table -> QueryBuilder table">
+  Remove duplicates based on a specific field.
+  
+  ```haskell
+  onePerUser <- query @Project
+      |> distinctOn #userId
+      |> orderByDesc #createdAt
+      |> fetch
+  -- SQL: SELECT DISTINCT ON (user_id) * FROM projects ORDER BY created_at DESC
+  ```
+</ParamField>
+
+## Joins
+
+<ParamField path="innerJoin" type="QueryBuilder left -> Proxy rightTable -> Proxy leftField -> Proxy rightField -> QueryBuilder (left, right)">
+  Perform an inner join.
+  
+  ```haskell
+  projectsWithUsers <- query @Project
+      |> innerJoin @User #userId #id
+      |> fetch
+  -- SQL: SELECT projects.*, users.* FROM projects 
+  --      INNER JOIN users ON projects.user_id = users.id
+  ```
+</ParamField>
+
+<ParamField path="innerJoinThirdTable" type="QueryBuilder (a, b) -> Proxy thirdTable -> Proxy field1 -> Proxy field2 -> QueryBuilder (a, b, c)">
+  Join a third table to an existing join.
+  
+  ```haskell
+  fullData <- query @Project
+      |> innerJoin @User #userId #id
+      |> innerJoinThirdTable @Team #teamId #id
+      |> fetch
+  -- Returns: [(Project, User, Team)]
+  ```
+</ParamField>
+
+### Filtering on Joined Tables
+
+<ParamField path="filterWhereJoinedTable" type="Proxy table -> (Proxy field, value) -> QueryBuilder joined -> QueryBuilder joined">
+  Filter on a joined table.
+  
+  ```haskell
+  activeUserProjects <- query @Project
+      |> innerJoin @User #userId #id
+      |> filterWhereJoinedTable @User (#active, True)
+      |> fetch
+  ```
+</ParamField>
+
+<ParamField path="orderByJoinedTable" type="Proxy table -> Proxy field -> QueryBuilder joined -> QueryBuilder joined">
+  Order by a field in a joined table.
+  
+  ```haskell
+  projectsByUserName <- query @Project
+      |> innerJoin @User #userId #id
+      |> orderByJoinedTable @User #name
+      |> fetch
+  ```
+</ParamField>
+
+## Unions
+
+<ParamField path="queryUnion" type="QueryBuilder table -> QueryBuilder table -> QueryBuilder table">
+  Combine two queries with UNION.
+  
+  ```haskell
+  allProjects <- queryUnion
+      (query @Project |> filterWhere (#status, "active"))
+      (query @Project |> filterWhere (#status, "pending"))
+      |> fetch
+  -- SQL: (SELECT * FROM projects WHERE status = 'active')
+  --      UNION
+  --      (SELECT * FROM projects WHERE status = 'pending')
+  ```
+</ParamField>
+
+<ParamField path="queryOr" type="[QueryBuilder table] -> QueryBuilder table">
+  Combine multiple queries with OR logic.
+  
+  ```haskell
+  projects <- queryOr
+      [ query @Project |> filterWhere (#priority, "high")
+      , query @Project |> filterWhere (#urgent, True)
+      ]
+      |> fetch
+  ```
+</ParamField>
+
+## SQL Compilation
+
+<ParamField path="buildQuery" type="QueryBuilder table -> (ByteString, [Action])">
+  Compile a query to SQL and parameters.
+  
+  ```haskell
+  let (sql, params) = buildQuery $ query @Project
+      |> filterWhere (#userId, userId)
+      |> orderByDesc #createdAt
+  -- sql: "SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC"
+  ```
+</ParamField>
+
+<ParamField path="toSQL" type="QueryBuilder table -> Statement">
+  Compile to a Hasql statement.
+  
+  ```haskell
+  import qualified IHP.QueryBuilder as QueryBuilder
+  
+  let statement = QueryBuilder.toSQL $ query @Project
+      |> filterWhere (#active, True)
+  ```
+</ParamField>
+
+## Example: Complex Query
+
+```haskell
+action ProjectsAction = do
+    let page = paramOrDefault @Int 0 "page"
+    let searchQuery = paramOrNothing @Text "q"
+    let status = paramOrDefault @Text "all" "status"
+    
+    projects <- query @Project
+        -- Filtering
+        |> filterWhere (#userId, currentUserId)
+        |> filterWhereNot (#deleted, True)
+        |> case status of
+            "active" -> filterWhere (#status, "active")
+            "archived" -> filterWhere (#status, "archived")
+            _ -> id
+        |> case searchQuery of
+            Just q -> filterWhereILike (#title, "%" <> q <> "%")
+            Nothing -> id
+        -- Ordering
+        |> orderByDesc #createdAt
+        -- Pagination
+        |> limit 20
+        |> offset (page * 20)
+        |> fetch
+    
+    render IndexView { projects, page }
+```
+
+## See Also
+
+- [Database Guide](/database/queries)
+- [QueryBuilder Guide](https://github.com/digitallyinduced/ihp/blob/master/Guide/querybuilder.markdown)
+- [Haddock: IHP.QueryBuilder](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html)
+- [Haddock: IHP.Fetch](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html)

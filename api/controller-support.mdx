@@ -1,0 +1,422 @@
+---
+title: IHP.ControllerSupport
+description: Core functions and types for building controllers and handling HTTP requests
+---
+
+## Overview
+
+The `IHP.ControllerSupport` module provides the foundation for building controllers in IHP. It includes functionality for:
+
+- Reading request parameters
+- Rendering responses (HTML, JSON, plain text)
+- Session and cookie management
+- File uploads
+- Redirects and error handling
+- Authentication and authorization
+
+This module is automatically available via `IHP.ControllerPrelude` in all controller files.
+
+## Core Types
+
+<ParamField path="Controller" type="Type Class">
+  The main type class that all controllers must implement.
+  
+  ```haskell
+  instance Controller PostsController where
+      action ShowPostAction { postId } = do
+          post <- fetch postId
+          render ShowView { post }
+  ```
+</ParamField>
+
+<ParamField path="Action'" type="Type Alias">
+  Type alias for `IO ResponseReceived`. This is the return type of controller actions.
+</ParamField>
+
+<ParamField path="ControllerContext" type="Type">
+  Context passed implicitly to all controller actions, containing request info, session, flash messages, etc.
+</ParamField>
+
+## Reading Parameters
+
+From `IHP.Controller.Param`:
+
+<ParamField path="param" type="ParamReader valueType => ByteString -> valueType">
+  Read a query or body parameter. Throws an exception if missing or invalid.
+  
+  ```haskell
+  action UsersAction = do
+      let maxItems = param @Int "maxItems"
+      let email = param @Text "email"
+      let userId = param @(Id User) "userId"
+  ```
+</ParamField>
+
+<ParamField path="paramOrDefault" type="ParamReader a => a -> ByteString -> a">
+  Read a parameter with a default value if missing.
+  
+  ```haskell
+  action UsersAction = do
+      let page = paramOrDefault @Int 0 "page"
+      let limit = paramOrDefault @Int 20 "limit"
+  ```
+</ParamField>
+
+<ParamField path="paramOrNothing" type="ParamReader (Maybe paramType) => ByteString -> Maybe paramType">
+  Read a parameter that may not be present.
+  
+  ```haskell
+  action SearchAction = do
+      let query = paramOrNothing @Text "q"
+      case query of
+          Just q -> performSearch q
+          Nothing -> render EmptySearchView
+  ```
+</ParamField>
+
+<ParamField path="paramList" type="ParamReader valueType => ByteString -> [valueType]">
+  Read multiple values for the same parameter name (useful for checkboxes).
+  
+  ```haskell
+  action BuildFoodAction = do
+      let ingredients = paramList @Text "ingredients"
+      -- URL: ?ingredients=milk&ingredients=egg
+      -- Result: ["milk", "egg"]
+  ```
+</ParamField>
+
+<ParamField path="hasParam" type="ByteString -> Bool">
+  Check if a parameter exists in the request.
+  
+  ```haskell
+  action HelloAction = do
+      if hasParam "firstname"
+          then renderPlain "Hello!"
+          else renderPlain "Please provide firstname"
+  ```
+</ParamField>
+
+### Specialized Parameter Functions
+
+<ParamField path="paramText" type="ByteString -> Text">
+  Specialized version of `param` for Text values.
+  
+  ```haskell
+  let name = paramText "name"
+  ```
+</ParamField>
+
+<ParamField path="paramInt" type="ByteString -> Int">
+  Specialized version of `param` for Int values.
+</ParamField>
+
+<ParamField path="paramBool" type="ByteString -> Bool">
+  Specialized version of `param` for Bool values.
+</ParamField>
+
+<ParamField path="paramUUID" type="ByteString -> UUID">
+  Specialized version of `param` for UUID values.
+</ParamField>
+
+## Mass Assignment
+
+<ParamField path="fill" type="FillParams params record => record -> record">
+  Fill multiple record fields from request parameters.
+  
+  ```haskell
+  action UpdateUserAction { userId } = do
+      user <- fetch userId
+      user
+          |> fill @["firstname", "lastname", "email"]
+          |> updateRecord
+      redirectTo UsersAction
+  ```
+</ParamField>
+
+<ParamField path="ifValid" type="(Either model model -> IO r) -> model -> IO r">
+  Branch based on validation state.
+  
+  ```haskell
+  user
+      |> fill @["email", "name"]
+      |> validateField #email isEmail
+      |> ifValid \case
+          Left user -> render EditView { user }
+          Right user -> do
+              user <- user |> updateRecord
+              redirectTo ShowUserAction { userId = user.id }
+  ```
+</ParamField>
+
+## Rendering Responses
+
+From `IHP.Controller.Render`:
+
+<ParamField path="render" type="View view => view -> IO ()">
+  Render a view with the default layout. Supports content negotiation (HTML/JSON).
+  
+  ```haskell
+  action ShowPostAction { postId } = do
+      post <- fetch postId
+      render ShowView { post }
+  ```
+</ParamField>
+
+<ParamField path="renderPlain" type="LByteString -> IO ()">
+  Render plain text response.
+  
+  ```haskell
+  action HealthCheckAction = do
+      renderPlain "OK"
+  ```
+</ParamField>
+
+<ParamField path="renderJson" type="ToJSON json => json -> IO ()">
+  Render JSON response.
+  
+  ```haskell
+  action ApiUsersAction = do
+      users <- query @User |> fetch
+      renderJson users
+  ```
+</ParamField>
+
+<ParamField path="renderFile" type="String -> ByteString -> IO ()">
+  Serve a file with a content type.
+  
+  ```haskell
+  action DownloadAction { fileId } = do
+      file <- fetch fileId
+      renderFile file.path "application/pdf"
+  ```
+</ParamField>
+
+## Request Information
+
+<ParamField path="getRequestBody" type="IO LByteString">
+  Get the raw request body.
+  
+  ```haskell
+  action WebhookAction = do
+      body <- getRequestBody
+      processWebhook body
+  ```
+</ParamField>
+
+<ParamField path="getRequestPath" type="ByteString">
+  Get the request path (e.g., "/Users").
+  
+  ```haskell
+  let path = getRequestPath
+  -- Returns: "/Users"
+  ```
+</ParamField>
+
+<ParamField path="getRequestPathAndQuery" type="ByteString">
+  Get the request path with query string.
+  
+  ```haskell
+  let pathAndQuery = getRequestPathAndQuery
+  -- Returns: "/Users?page=2"
+  ```
+</ParamField>
+
+<ParamField path="getHeader" type="ByteString -> Maybe ByteString">
+  Get a request header value (case-insensitive).
+  
+  ```haskell
+  action ShowAction = do
+      let contentType = getHeader "Content-Type"
+      case contentType of
+          Just "application/json" -> renderJson data
+          _ -> render ShowView
+  ```
+</ParamField>
+
+<ParamField path="setHeader" type="Header -> IO ()">
+  Set a response header.
+  
+  ```haskell
+  action DownloadAction = do
+      setHeader ("Content-Disposition", "attachment; filename=export.csv")
+      renderPlain csvData
+  ```
+</ParamField>
+
+<ParamField path="request" type="Request">
+  Access the current WAI Request object.
+  
+  ```haskell
+  let req = request
+  let method = req.requestMethod
+  ```
+</ParamField>
+
+## Redirects
+
+From `IHP.Controller.Redirect`:
+
+<ParamField path="redirectTo" type="(?request :: Request) => action -> IO ()">
+  Redirect to another action.
+  
+  ```haskell
+  action CreatePostAction = do
+      post <- newRecord @Post
+          |> fill @["title", "body"]
+          |> createRecord
+      redirectTo ShowPostAction { postId = post.id }
+  ```
+</ParamField>
+
+<ParamField path="redirectToPath" type="Text -> IO ()">
+  Redirect to a URL path.
+  
+  ```haskell
+  redirectToPath "/admin/dashboard"
+  ```
+</ParamField>
+
+<ParamField path="redirectToUrl" type="Text -> IO ()">
+  Redirect to an external URL.
+  
+  ```haskell
+  redirectToUrl "https://example.com"
+  ```
+</ParamField>
+
+## Session Management
+
+From `IHP.Controller.Session`:
+
+<ParamField path="setSession" type="Text -> Text -> IO ()">
+  Set a session variable.
+  
+  ```haskell
+  action LoginAction = do
+      -- After authentication
+      setSession "userId" (show user.id)
+      redirectTo DashboardAction
+  ```
+</ParamField>
+
+<ParamField path="getSession" type="Text -> IO (Maybe Text)">
+  Get a session variable.
+  
+  ```haskell
+  action DashboardAction = do
+      maybeUserId <- getSession "userId"
+      case maybeUserId of
+          Just userId -> ...
+          Nothing -> redirectTo LoginAction
+  ```
+</ParamField>
+
+<ParamField path="deleteSession" type="Text -> IO ()">
+  Delete a session variable.
+  
+  ```haskell
+  action LogoutAction = do
+      deleteSession "userId"
+      redirectTo HomeAction
+  ```
+</ParamField>
+
+## File Uploads
+
+From `IHP.Controller.FileUpload`:
+
+<ParamField path="getFiles" type="[File ByteString]">
+  Get all uploaded files from the current request.
+  
+  ```haskell
+  action UploadAction = do
+      let files = getFiles
+      forM_ files \file -> do
+          storeFile file "uploads/"
+  ```
+</ParamField>
+
+## Error Handling
+
+From `IHP.Controller.NotFound` and `IHP.Controller.AccessDenied`:
+
+<ParamField path="notFound" type="IO ()">
+  Return a 404 Not Found response.
+  
+  ```haskell
+  action ShowPostAction { postId } = do
+      maybePost <- fetchOneOrNothing postId
+      case maybePost of
+          Just post -> render ShowView { post }
+          Nothing -> notFound
+  ```
+</ParamField>
+
+<ParamField path="accessDenied" type="IO ()">
+  Return a 403 Access Denied response.
+  
+  ```haskell
+  action DeletePostAction { postId } = do
+      post <- fetch postId
+      if post.userId == currentUserId
+          then deleteRecord post
+          else accessDenied
+  ```
+</ParamField>
+
+## Configuration
+
+<ParamField path="getAppConfig" type="Typeable configParameter => configParameter">
+  Get a custom config parameter.
+  
+  ```haskell
+  action PaymentAction = do
+      let (StripePublicKey key) = getAppConfig @StripePublicKey
+      render PaymentView { stripeKey = key }
+  ```
+  
+  First define the config in `Config/Config.hs`:
+  
+  ```haskell
+  newtype StripePublicKey = StripePublicKey Text
+  
+  config :: ConfigBuilder
+  config = do
+      option development
+      stripeKey <- StripePublicKey <$> env @Text "STRIPE_PUBLIC_KEY"
+      option stripeKey
+  ```
+</ParamField>
+
+## Advanced Features
+
+<ParamField path="beforeAction" type="IO ()">
+  Hook that runs before every action in a controller.
+  
+  ```haskell
+  instance Controller AdminController where
+      beforeAction = do
+          user <- getCurrentUser
+          unless user.isAdmin $ accessDenied
+      
+      action DashboardAction = render DashboardView
+  ```
+</ParamField>
+
+<ParamField path="jumpToAction" type="Controller action => action -> IO ()">
+  Jump to another action without redirecting.
+  
+  ```haskell
+  action CreatePostAction = do
+      post <- newRecord @Post |> createRecord
+      jumpToAction ShowPostAction { postId = post.id }
+  ```
+</ParamField>
+
+## See Also
+
+- [Controller Guide](/controllers)
+- [Routing](/routing)
+- [Haddock: IHP.ControllerSupport](https://ihp.digitallyinduced.com/api-docs/IHP-ControllerSupport.html)
+- [Haddock: IHP.Controller.Param](https://ihp.digitallyinduced.com/api-docs/IHP-Controller-Param.html)
+- [Haddock: IHP.Controller.Render](https://ihp.digitallyinduced.com/api-docs/IHP-Controller-Render.html)

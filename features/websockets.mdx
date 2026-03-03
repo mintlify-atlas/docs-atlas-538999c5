@@ -1,0 +1,259 @@
+---
+title: WebSockets
+description: Build real-time features with IHP's first-class WebSocket support for bidirectional communication between client and server
+---
+
+IHP has first-class support for WebSockets, enabling real-time bidirectional communication.
+
+<Note>
+If you only need to push UI updates to the client, check out [Auto Refresh](https://ihp.digitallyinduced.com/Guide/auto-refresh.html) - a higher-level API built on WebSockets.
+</Note>
+
+## Creating a WebSocket Controller
+
+<Steps>
+  <Step title="Define the controller type in Web/Types.hs">
+    ```haskell
+    data HelloWorldController
+        = HelloWorldController
+        deriving (Eq, Show, Data)
+    ```
+  </Step>
+
+  <Step title="Create Web/Controller/HelloWorld.hs">
+    ```haskell
+    module Web.Controller.HelloWorld where
+
+    import Web.Controller.Prelude
+
+    instance WSApp HelloWorldController where
+        initialState = HelloWorldController
+
+        run = do
+            sendTextData ("Hello World!" :: Text)
+    ```
+  </Step>
+
+  <Step title="Add routing in Web/FrontController.hs">
+    ```haskell
+    import Web.Controller.HelloWorld
+
+    instance FrontController WebApplication where
+        controllers = 
+            [ startPage StartPageAction
+            , webSocketApp @HelloWorldController
+            ]
+    ```
+  </Step>
+</Steps>
+
+Your WebSocket is now accessible at `ws://localhost:8000/HelloWorldController`.
+
+## Connecting from JavaScript
+
+In `static/app.js`:
+
+```javascript
+var helloWorldController = new WebSocket('ws://localhost:8000/HelloWorldController');
+
+helloWorldController.onopen = function (event) {
+    console.log('Connected');
+};
+
+helloWorldController.onmessage = function (event) {
+    console.log(event.data);
+};
+```
+
+Open the browser console to see:
+
+```
+Connected
+Hello World!
+```
+
+## Sending and Receiving Messages
+
+### Server-Side
+
+Receive data from the client:
+
+```haskell
+module Web.Controller.HelloWorld where
+
+import Web.Controller.Prelude
+
+instance WSApp HelloWorldController where
+    initialState = HelloWorldController
+
+    run = do
+        name :: Text <- receiveData
+        sendTextData ("Hello " <> name <> "!")
+```
+
+`receiveData` blocks until the client sends data.
+
+### Client-Side
+
+Send data to the server:
+
+```javascript
+var helloWorldController = new WebSocket('ws://localhost:8000/HelloWorldController');
+
+helloWorldController.onopen = function (event) {
+    var name = prompt('Your name?');
+    helloWorldController.send(name);
+};
+
+helloWorldController.onmessage = function (event) {
+    console.log(event.data);
+};
+```
+
+## Working with JSON
+
+Send JSON from the server:
+
+```haskell
+module Web.Controller.HelloWorld where
+
+import Web.Controller.Prelude
+import Data.Aeson
+
+instance WSApp HelloWorldController where
+    initialState = HelloWorldController
+
+    run = do
+        name :: Text <- receiveData
+        sendJSON HelloWorldResponse { name }
+
+data HelloWorldResponse = HelloWorldResponse { name :: Text }
+
+instance ToJSON HelloWorldResponse where
+    toJSON HelloWorldResponse { name } = object ["name" .= name]
+```
+
+The client receives: `{"name":"Alice"}`
+
+## Receiving Different Data Types
+
+```haskell
+myInt  :: Int  <- receiveData
+myUUID :: UUID <- receiveData
+myBool :: Bool <- receiveData
+```
+
+## Managing State
+
+Define states in your controller type:
+
+```haskell
+data HelloWorldController
+    = WaitForName
+    | NameEntered { name :: Text }
+    deriving (Eq, Show, Data)
+```
+
+Update state during execution:
+
+```haskell
+instance WSApp HelloWorldController where
+    initialState = WaitForName
+
+    run = do
+        name <- receiveData @Text
+        setState NameEntered { name }
+        sendTextData ("Hello " <> name <> "!")
+
+    onClose = do
+        state <- getState
+        case state of
+            WaitForName -> pure ()
+            NameEntered { name } -> putStrLn (name <> " has left!")
+```
+
+<Note>
+The connection closes automatically when `run` completes. Use `forever` to keep it open:
+
+```haskell
+run = forever do
+    name <- receiveData @Text
+    setState NameEntered { name }
+    sendTextData ("Hello " <> name <> "!")
+```
+</Note>
+
+## Accessing the Current User
+
+Use normal auth functions in WebSocket controllers:
+
+```haskell
+module Web.Controller.HelloWorld where
+
+import Web.Controller.Prelude
+
+instance WSApp HelloWorldController where
+    run = do
+        let name = currentUser.name
+        sendTextData ("Hello " <> name <> "!")
+```
+
+## Advanced Features
+
+### Custom Routing
+
+Use a custom path:
+
+```haskell
+instance FrontController WebApplication where
+    controllers = 
+        [ startPage StartPageAction
+        , webSocketAppWithCustomPath @HelloWorldController "my-ws"
+        ]
+```
+
+Accessible at `/my-ws`.
+
+### Custom Data Types
+
+Implement `WebSocketsData` for custom decoders:
+
+```haskell
+import qualified Network.WebSockets as WS
+import qualified Data.UUID as UUID
+
+instance WS.WebSocketsData UUID where
+    fromDataMessage (WS.Text byteString _) = 
+        UUID.fromLazyASCIIBytes byteString |> Maybe.fromJust
+    fromDataMessage (WS.Binary byteString) = 
+        UUID.fromLazyASCIIBytes byteString |> Maybe.fromJust
+    fromLazyByteString = 
+        UUID.fromLazyASCIIBytes |> Maybe.fromJust
+    toLazyByteString = UUID.toLazyASCIIBytes
+```
+
+### Ping Handling
+
+By default, the server pings every 30 seconds. Override `onPing` to run custom code:
+
+```haskell
+onPing = do
+    now <- getCurrentTime
+    state <- getState
+    -- Custom ping handling logic
+    pure ()
+```
+
+## Lifecycle Events
+
+- `initialState` - Initial controller state
+- `run` - Main WebSocket logic
+- `onClose` - Called when connection closes
+- `onPing` - Called after each ping (every 30 seconds)
+
+## State Management Functions
+
+- `getState` - Retrieve current state
+- `setState` - Update state
+
+Using these with well-designed data structures provides powerful state management for WebSocket connections.

@@ -1,0 +1,532 @@
+---
+title: IHP OpenAI API
+description: OpenAI and compatible LLM integration for IHP
+---
+
+## Overview
+
+IHP OpenAI provides a type-safe Haskell interface to OpenAI's API (and compatible APIs like Google's Gemini). It supports both streaming and non-streaming completions with automatic retries.
+
+**Key Features:**
+- Type-safe API client for OpenAI and compatible services
+- Streaming completion support with Server-Sent Events
+- Automatic retry logic with exponential backoff
+- Tool/function calling support
+- JSON response format mode
+
+## Installation
+
+Add `ihp-openai` to your project's `default.nix`:
+
+```nix
+haskellDeps = p: with p; [
+    ihp-openai
+];
+```
+
+## Configuration
+
+### Config
+
+API configuration with base URL and API key:
+
+```haskell
+data Config = Config
+    { baseUrl :: !Text
+    , secretKey :: !Text
+    }
+```
+
+### defaultConfig
+
+Create a configuration for OpenAI:
+
+```haskell
+defaultConfig :: Text -> Config
+```
+
+<ParamField path="secretKey" type="Text">
+  Your OpenAI API key
+</ParamField>
+
+<ResponseField name="Config" type="Config">
+  Configuration with OpenAI base URL (`https://api.openai.com/v1`)
+</ResponseField>
+
+**Example:**
+
+```haskell
+let config = defaultConfig "sk-..."
+-- Uses api.openai.com
+```
+
+### Custom Providers
+
+For Google Gemini or other providers:
+
+```haskell
+let config = Config
+    { baseUrl = googleBaseUrl  -- "https://generativelanguage.googleapis.com/v1beta/openai"
+    , secretKey = "your-google-api-key"
+    }
+```
+
+## Messages
+
+### Message
+
+A message in the conversation:
+
+```haskell
+data Message = Message
+    { role :: !Role
+    , content :: !Text
+    , name :: !(Maybe Text)
+    , toolCallId :: !(Maybe Text)
+    , toolCalls :: ![ToolCall]
+    , cacheControl :: !(Maybe CacheControl)
+    }
+
+data Role
+    = UserRole
+    | SystemRole
+    | AssistantRole
+    | ToolRole
+```
+
+### Message Helpers
+
+Convenience functions for creating messages:
+
+```haskell
+userMessage :: Text -> Message
+systemMessage :: Text -> Message
+assistantMessage :: Text -> Message
+toolMessage :: Text -> Message
+```
+
+**Example:**
+
+```haskell
+let messages = 
+    [ systemMessage "You are a helpful assistant."
+    , userMessage "What is the capital of France?"
+    ]
+```
+
+## Completion Requests
+
+### CompletionRequest
+
+Configure a completion request:
+
+```haskell
+data CompletionRequest = CompletionRequest
+    { messages :: ![Message]
+    , model :: !Text
+    , maxTokens :: !(Maybe Int)
+    , temperature :: !(Maybe Double)
+    , presencePenalty :: !(Maybe Double)
+    , frequencePenalty :: !(Maybe Double)
+    , stream :: !Bool
+    , responseFormat :: !(Maybe ResponseFormat)
+    , tools :: ![Tool]
+    , reasoningEffort :: !(Maybe Text)
+    , parallelToolCalls :: !(Maybe Bool)
+    , extraHeaders :: [(Text, Text)]
+    }
+```
+
+### newCompletionRequest
+
+Default completion request:
+
+```haskell
+newCompletionRequest :: CompletionRequest
+```
+
+Defaults:
+- `model`: `"gpt-3.5-turbo"`
+- `stream`: `False`
+- `messages`: `[]`
+- All optional fields: `Nothing`
+
+**Example:**
+
+```haskell
+let request = newCompletionRequest
+        |> set #model "gpt-4"
+        |> set #messages [userMessage "Hello!"]
+        |> set #maxTokens (Just 100)
+        |> set #temperature (Just 0.7)
+```
+
+### ResponseFormat
+
+Control response format:
+
+```haskell
+data ResponseFormat
+    = Text
+    | JsonObject
+```
+
+**Example:**
+
+```haskell
+let request = newCompletionRequest
+        |> set #responseFormat (Just JsonObject)
+        |> set #messages [userMessage "Return a JSON object with fields: name, age"]
+```
+
+## Simple Completions
+
+### fetchCompletion
+
+Fetch a non-streaming completion:
+
+```haskell
+fetchCompletion :: Config -> CompletionRequest -> IO Text
+```
+
+<ParamField path="config" type="Config">
+  API configuration
+</ParamField>
+
+<ParamField path="request" type="CompletionRequest">
+  Completion request parameters
+</ParamField>
+
+<ResponseField name="text" type="Text">
+  The generated completion text
+</ResponseField>
+
+**Example:**
+
+```haskell
+import IHP.OpenAI
+
+action GenerateAction = do
+    let config = defaultConfig "sk-..."
+    
+    let request = newCompletionRequest
+            |> set #model "gpt-4"
+            |> set #messages
+                [ systemMessage "You are a helpful assistant."
+                , userMessage "Explain Haskell in one sentence."
+                ]
+    
+    response <- fetchCompletion config request
+    
+    putStrLn response
+    -- "Haskell is a statically typed, purely functional programming language..."
+```
+
+## Streaming Completions
+
+### streamCompletion
+
+Stream a completion with real-time chunks:
+
+```haskell
+streamCompletion :: 
+    Config 
+    -> CompletionRequest 
+    -> IO ()                        -- onStart callback
+    -> (CompletionChunk -> IO ())   -- chunk callback
+    -> IO [CompletionChunk]
+```
+
+<ParamField path="config" type="Config">
+  API configuration
+</ParamField>
+
+<ParamField path="request" type="CompletionRequest">
+  Completion request (stream is automatically enabled)
+</ParamField>
+
+<ParamField path="onStart" type="IO ()">
+  Callback executed when streaming begins
+</ParamField>
+
+<ParamField path="callback" type="CompletionChunk -> IO ()">
+  Callback for each chunk received
+</ParamField>
+
+<ResponseField name="chunks" type="[CompletionChunk]">
+  All chunks received during streaming
+</ResponseField>
+
+**Example:**
+
+```haskell
+action StreamAction = do
+    let config = defaultConfig "sk-..."
+    
+    let request = newCompletionRequest
+            |> set #model "gpt-4"
+            |> set #messages [userMessage "Write a haiku about Haskell."]
+    
+    chunks <- streamCompletion config request
+        (putStrLn "Starting stream...")
+        (\chunk -> do
+            let text = chunk.choices
+                    |> mapMaybe (\choice -> choice.delta.content)
+                    |> mconcat
+            putStr text
+            hFlush stdout
+        )
+    
+    putStrLn "\nStream complete!"
+```
+
+### CompletionChunk
+
+A single chunk from a streaming response:
+
+```haskell
+data CompletionChunk = CompletionChunk
+    { id :: !Text
+    , choices :: [CompletionChunkChoice]
+    , created :: Int
+    , model :: !Text
+    , systemFingerprint :: !(Maybe Text)
+    , usage :: (Maybe Usage)
+    }
+
+data CompletionChunkChoice = CompletionChunkChoice 
+    { delta :: !Delta
+    , finishReason :: !(Maybe FinishReason)
+    }
+
+data Delta = Delta
+    { content :: !(Maybe Text)
+    , toolCalls :: !(Maybe [ToolCall])
+    , role :: !(Maybe Role)
+    }
+
+data FinishReason
+    = FinishReasonStop
+    | FinishReasonLength
+    | FinishReasonContentFilter
+    | FinishReasonToolCalls
+```
+
+## Tool/Function Calling
+
+### Tool
+
+Define a function the LLM can call:
+
+```haskell
+data Tool = Function 
+    { description :: !(Maybe Text)
+    , name :: !Text
+    , parameters :: !(Maybe JsonSchema)
+    }
+```
+
+### JsonSchema
+
+Define parameter schemas:
+
+```haskell
+data JsonSchema
+    = JsonSchemaObject ![Property]
+    | JsonSchemaString
+    | JsonSchemaInteger
+    | JsonSchemaNumber
+    | JsonSchemaArray !JsonSchema
+    | JsonSchemaEnum ![Text]
+
+data Property = Property 
+    { propertyName :: !Text
+    , type_ :: !JsonSchema
+    , required :: !Bool
+    , description :: !(Maybe Text)
+    }
+```
+
+**Example:**
+
+```haskell
+let getCurrentWeather = Function
+        { name = "get_current_weather"
+        , description = Just "Get the current weather in a location"
+        , parameters = Just $ JsonSchemaObject
+            [ Property
+                { propertyName = "location"
+                , type_ = JsonSchemaString
+                , required = True
+                , description = Just "The city and state, e.g. San Francisco, CA"
+                }
+            , Property
+                { propertyName = "unit"
+                , type_ = JsonSchemaEnum ["celsius", "fahrenheit"]
+                , required = False
+                , description = Nothing
+                }
+            ]
+        }
+
+let request = newCompletionRequest
+        |> set #model "gpt-4"
+        |> set #tools [getCurrentWeather]
+        |> set #messages [userMessage "What's the weather in Boston?"]
+
+response <- fetchCompletion config request
+-- LLM will call the function with appropriate arguments
+```
+
+### ToolCall
+
+Function call from the LLM:
+
+```haskell
+data ToolCall = FunctionCall
+    { index :: !Int
+    , id :: !(Maybe Text)
+    , name :: !(Maybe Text)
+    , arguments :: !Text  -- JSON string
+    }
+```
+
+## Automatic Retries
+
+Both `fetchCompletion` and `streamCompletion` include automatic retry logic:
+
+- **Retry policy**: 10 retries with 50ms constant delay
+- **Retries on**: Network errors, API errors, incomplete responses
+- **No retry on**: Successful responses, invalid API keys
+
+**Example with manual retry control:**
+
+```haskell
+import qualified Control.Retry as Retry
+
+-- Custom retry policy: exponential backoff
+let customRetry = Retry.exponentialBackoff 1000000 <> Retry.limitRetries 5
+
+-- Use fetchCompletionWithoutRetry for manual control
+result <- Retry.retrying customRetry shouldRetry (\_ -> 
+    Exception.try (fetchCompletionWithoutRetry config request)
+)
+```
+
+## Usage Tracking
+
+### Usage
+
+Token usage information (only in streaming mode):
+
+```haskell
+data Usage = Usage
+    { promptTokens :: !Int
+    , completionTokens :: !Int
+    , totalTokens :: !Int
+    }
+```
+
+**Example:**
+
+```haskell
+chunks <- streamCompletion config request onStart callback
+
+let maybeUsage = chunks
+        |> lastMay
+        >>= (.usage)
+
+case maybeUsage of
+    Just Usage { totalTokens } -> 
+        putStrLn $ "Total tokens used: " <> show totalTokens
+    Nothing -> 
+        putStrLn "Usage information not available"
+```
+
+## Advanced Options
+
+### Temperature
+
+Control randomness (0.0 to 2.0):
+
+```haskell
+let creative = newCompletionRequest
+        |> set #temperature (Just 0.9)  -- More random
+
+let deterministic = newCompletionRequest
+        |> set #temperature (Just 0.1)  -- More focused
+```
+
+### Penalties
+
+Control repetition:
+
+```haskell
+let request = newCompletionRequest
+        |> set #presencePenalty (Just 0.6)   -- Penalize topics already mentioned
+        |> set #frequencePenalty (Just 0.5)  -- Penalize frequent tokens
+```
+
+### Extra Headers
+
+Add custom HTTP headers:
+
+```haskell
+let request = newCompletionRequest
+        |> set #extraHeaders
+            [ ("X-Custom-Header", "value")
+            , ("Organization", "org-123")
+            ]
+```
+
+## Error Handling
+
+### CompletionResult
+
+Result type for non-streaming completions:
+
+```haskell
+data CompletionResult
+    = CompletionResult { choices :: [Choice] }
+    | CompletionError { message :: !Text }
+```
+
+Errors are automatically thrown as exceptions. Catch them with:
+
+```haskell
+import qualified Control.Exception.Safe as Exception
+
+result <- Exception.try (fetchCompletion config request)
+
+case result of
+    Right text -> 
+        putStrLn text
+    Left (e :: Exception.SomeException) -> 
+        putStrLn $ "Error: " <> displayException e
+```
+
+## Best Practices
+
+1. **Use system messages for instructions**:
+   ```haskell
+   [ systemMessage "You are a JSON API. Always respond with valid JSON."
+   , userMessage "Get user with id 123"
+   ]
+   ```
+
+2. **Stream for better UX**: Use `streamCompletion` for interactive applications
+
+3. **Set max tokens**: Prevent runaway costs
+   ```haskell
+   set #maxTokens (Just 500)
+   ```
+
+4. **Use tools for structured outputs**: Better than asking for JSON in text
+
+5. **Handle rate limits**: Built-in retry handles transient errors
+
+## See Also
+
+- [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
+- [Google Gemini API](https://ai.google.dev/)
+- [IHP Job Queue](/features/jobs) for async LLM processing

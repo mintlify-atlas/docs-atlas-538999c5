@@ -1,0 +1,436 @@
+---
+title: Form Handling
+description: Build type-safe, validated forms with automatic rendering and Bootstrap 5 styling
+---
+
+## Introduction
+
+In IHP, forms are an essential way to interact with your application. IHP provides helpers to generate form markup to help you deal with complexity around consistent styling and validation.
+
+By default, forms in IHP follow the class names used by Bootstrap 5. The default form generation can be customized to support other CSS frameworks.
+
+Unless JavaScript helpers have been deactivated, your form will be submitted using AJAX and TurboLinks instead of browser-based form submission.
+
+## Simple Forms
+
+Forms usually begin with a `formFor` expression. Here's a simple example:
+
+```haskell
+renderForm :: Post -> Html
+renderForm post = formFor post [hsx|
+    {textField #title}
+    {textareaField #body}
+    {submitButton}
+|]
+```
+
+This generates the following HTML:
+
+```html
+<form method="POST" action="/CreatePost" id="" class="new-form">
+    <div class="mb-3" id="form-group-post_title">
+        <label for="post_title" class="form-label">Title</label>
+        <input type="text" name="title" id="post_title" class="form-control" />
+    </div>
+
+    <div class="mb-3" id="form-group-post_body">
+        <label for="post_body" class="form-label">Body</label>
+        <textarea name="body" id="post_body" class="form-control"></textarea>
+    </div>
+
+    <button class="btn btn-primary">Create Post</button>
+</form>
+```
+
+The form is submitted via `POST`, the action is automatically set to `/CreatePost`, and all inputs have auto-generated class names, IDs, and name attributes.
+
+## Form Controls
+
+IHP has the most commonly-used form control helpers built in. Here's a list of all built-in form control helpers:
+
+- `{textField #title}`
+- `{textareaField #body}`
+- `{colorField #brandColor}`
+- `{emailField #email}`
+- `{dateField #dueAt}`
+- `{passwordField #password}`
+- `{dateTimeField #createdAt}`
+- `{numberField #quantity}`
+- `{urlField #url}`
+- `{hiddenField #projectId}`
+- `{checkboxField #termsAccepted}`
+- `{selectField #projectId allProjects}`
+- `{radioField #projectId allProjects}`
+- `{fileField #profilePicture}`
+- `{submitButton}`
+
+A form control is always filled with the value of the given field when rendering:
+
+```haskell
+let post = Post { ..., title = "Hello World" }
+```
+
+Rendering `{textField #title}`, the input value will be set:
+
+```html
+<input ... value="Hello World" />
+```
+
+## Validation
+
+When rendering a record that has failed validation, the validation error message will be rendered automatically.
+
+Given a post like this:
+
+```haskell
+let post = Post { ..., title = "" }
+    |> validateField #title nonEmpty
+```
+
+Rendering `{textField #title}`, the input will have the CSS class `is-invalid` and an error message will be rendered:
+
+```html
+<div class="mb-3" id="form-group-post_title">
+    <label for="post_title" class="form-label">Title</label>
+    <input
+        type="text"
+        name="title"
+        placeholder=""
+        id="post_title"
+        class="form-control is-invalid "
+    />
+    <div class="invalid-feedback">This field cannot be empty</div>
+</div>
+```
+
+## Forms Are Also HSX
+
+While the form helpers are called by `formFor`, you can still use HSX inside your form:
+
+```haskell
+renderForm :: Post -> Html
+renderForm post = formFor post [hsx|
+    <h1>Add a new post</h1>
+
+    <div class="row">
+        <div class="col">
+            {textField #title}
+        </div>
+
+        <div class="col">
+            Specify a title at the left text field
+        </div>
+    </div>
+
+    {textareaField #body}
+
+    <div style="background: blue">
+        {submitButton}
+    </div>
+|]
+```
+
+Inside the HSX block of a form, you have access to the special `?formContext` variable, which keeps track of the current record, form action, and other options.
+
+## Customizing Inputs
+
+### Help Texts
+
+Add a help text below a form control:
+
+```haskell
+{(textField #title) { helpText = "Max. 140 characters"} }
+```
+
+This renders:
+
+```html
+<div class="mb-3" id="form-group-post_title">
+    <label for="post_title" class="form-label">Title</label>
+    <input type="text" name="title" id="post_title" class="form-control" />
+    <small class="form-text">Max. 140 characters</small>
+</div>
+```
+
+### Custom Field Label Text
+
+Customize the auto-generated label:
+
+```haskell
+{(textField #title) { fieldLabel = "Post Title"} }
+```
+
+### Custom CSS Classes
+
+Add custom CSS classes to inputs and labels:
+
+```haskell
+{(textField #title) { fieldClass="title-input", labelClass = "title-label" } }
+```
+
+### Placeholder
+
+Specify an input placeholder:
+
+```haskell
+{(textField #title) { placeholder = "Enter your title ..." } }
+```
+
+### Required Fields
+
+Mark an input as required:
+
+```haskell
+{(textField #title) { required = True } }
+```
+
+### Disabled Fields
+
+Mark an input as disabled:
+
+```haskell
+{(textField #title) { disabled = True } }
+```
+
+### Autofocus
+
+Give input focus on page load:
+
+```haskell
+{(textField #title) { autofocus = True } }
+```
+
+### Custom Submit Button Text
+
+```haskell
+{submitButton { label = "Create it!" } }
+```
+
+### Custom Submit Button Class
+
+```haskell
+{submitButton { buttonClass = "create-button" } }
+```
+
+## Select and Radio Inputs
+
+Select inputs require you to pass a list of possible values:
+
+```haskell
+formFor project [hsx|
+    {selectField #userId users}
+    {radioField #userId users}
+|]
+```
+
+You need to define a `CanSelect User` instance:
+
+```haskell
+instance CanSelect User where
+    -- Specify that the <option> value should contain a `Id User`
+    type SelectValue User = Id User
+    -- Specify how to transform the model into <option>-value
+    selectValue user = user.id
+    -- Specify the <option>-text
+    selectLabel user = user.name
+```
+
+Given `users = [User { id = 1, name = "Marc" }, User { id = 2, name = "Andreas" }]`, this renders:
+
+```html
+<form ...>
+    <select name="user_id">
+        <option value="1">Marc</option>
+        <option value="2">Andreas</option>
+    </select>
+</form>
+```
+
+### Select Inputs with Nullable Value
+
+To allow the user to make a choice of missing/none, adjust the `CanSelect` instance:
+
+```haskell
+instance CanSelect (Maybe User) where
+    type SelectValue (Maybe User) = Maybe (Id User)
+    selectValue (Just user) = Just user.id
+    selectValue Nothing = Nothing
+    selectLabel (Just user) = user.name
+    selectLabel Nothing = "(none selected)"
+```
+
+Amend the list with `Nothing` as the first item:
+
+```haskell
+formFor project [hsx|
+    {selectField #userId (Nothing:(map Just users))}
+|]
+```
+
+### Select Inputs with Custom Enums
+
+Given an enum:
+
+```sql
+CREATE TYPE CONTENT_TYPE AS ENUM ('video', 'article', 'audio');
+```
+
+Define a `CanSelect ContentType`:
+
+```haskell
+instance CanSelect ContentType where
+    type SelectValue ContentType = ContentType
+    selectValue value = value
+
+    selectLabel Video = "Video"
+    selectLabel Article = "Article"
+    selectLabel Audio = "Audio"
+```
+
+Use `allEnumValues` in your view:
+
+```haskell
+formFor subscription [hsx|
+    {selectField #contentType allContentTypes}
+|]
+    where
+      allContentTypes = allEnumValues @ContentType
+```
+
+### Select Inputs with Integers
+
+For a select field consisting of integers:
+
+```haskell
+formFor subscription [hsx|
+    {selectField #quantity quantities}
+|]
+    where
+        quantities :: [Int]
+        quantities = [1..10]
+```
+
+Define a `CanSelect` instance:
+
+```haskell
+instance CanSelect Int where
+    type SelectValue Int = Int
+    selectValue quantity = quantity
+    selectLabel quantity = tshow quantity
+```
+
+## Customizing Forms
+
+### Custom Form Action / Form URLs
+
+The URL where the form is submitted is specified in the `action` attribute. Use `formFor'` to override:
+
+```haskell
+renderForm :: Post -> Html
+renderForm post = formFor' post "/my-custom-endpoint" [hsx||]
+```
+
+If you pass an action, wrap it with `pathTo`:
+
+```haskell
+renderForm :: Post -> Html
+renderForm post = formFor' post (pathTo CreateDraftAction) [hsx||]
+```
+
+### Custom Form Class
+
+By default forms have the CSS class `new-form` or `edit-form`. Override using `formForWithOptions`:
+
+```haskell
+renderForm :: Post -> Html
+renderForm post = formForWithOptions post options [hsx||]
+
+options :: FormContext Post -> FormContext Post
+options formContext =
+    formContext
+    |> set #formClass "custom-form-class"
+```
+
+### Custom Form Id
+
+Set a `<form id="">` attribute:
+
+```haskell
+options :: FormContext Post -> FormContext Post
+options formContext =
+    formContext
+    |> set #formId "post-form"
+```
+
+### GET Forms / Custom Form Method
+
+By default forms use `method="POST"`. Override using `formMethod`:
+
+```haskell
+options :: FormContext Post -> FormContext Post
+options formContext =
+    formContext
+    |> set #formMethod "GET"
+```
+
+### Disable Form Submission via JavaScript
+
+Forms are submitted using AJAX and TurboLinks. Disable this behavior:
+
+```haskell
+renderForm :: Post -> Html
+renderForm post = formForWithoutJavascript post [hsx||]
+```
+
+## Standalone Validation Errors
+
+If you're using a custom widget for a form field, use `validationResult` to render standalone validation errors:
+
+```haskell
+formFor user [hsx|
+    <div class="mb-3">
+        <label class="form-label" for="passwordReset_email">Email</label>
+        <input type="text" name="email" placeholder="" id="passwordReset_email" class="form-control is-invalid">
+        {validationResult #email}
+    </div>
+|]
+```
+
+This renders when validation fails:
+
+```html
+<div class="invalid-feedback">is not a valid email</div>
+```
+
+## CSRF Protection
+
+IHP by default sets session cookies using the Lax SameSite option. This protects against all common CSRF vectors. This browser-based CSRF protection works with all modern browsers, therefore token-based protection is not used.
+
+## JavaScript Helpers
+
+By default, forms are submitted using AJAX and TurboLinks. This supports SPA-like page transitions and automatically:
+- Disables the submit button after submission
+- Removes flash messages inside the form
+
+You can call `window.submitForm(formElement)` to trigger a form submission from JavaScript.
+
+The form helpers are designed to improve the User Experience for browsers where JavaScript is enabled. If JavaScript is not enabled or blocked, the form submission will still work as expected.
+
+To disable the form helpers, remove the IHP JavaScript helpers from your layout. In `Web/View/Layout.hs` remove:
+
+```html
+<script src="/helpers.js"></script>
+```
+
+## Working with Bootstrap CSS
+
+While the default forms layout is vertical with one field per line, it's easy to change. Bootstrap's excellent [forms documentation](https://getbootstrap.com/docs/5.3/forms/overview/) shows how.
+
+## API Reference
+
+- [`formFor`](https://ihp.digitallyinduced.com/api-docs/IHP-View-Form.html#v:formFor)
+- [`formFor'`](https://ihp.digitallyinduced.com/api-docs/IHP-View-Form.html#v:formFor-39-)
+- [`formForWithOptions`](https://ihp.digitallyinduced.com/api-docs/IHP-View-Form.html#v:formForWithOptions)
+- [`FormContext`](https://ihp.digitallyinduced.com/api-docs/IHP-View-Form.html#t:FormContext)
+- [`FormField`](https://ihp.digitallyinduced.com/api-docs/IHP-View-Form.html#t:FormField)
+- [`CanSelect`](https://ihp.digitallyinduced.com/api-docs/IHP-View-Form.html#t:CanSelect)

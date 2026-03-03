@@ -1,0 +1,435 @@
+---
+title: IHP.ViewSupport
+description: Functions and types for building HTML views with HSX templating
+---
+
+## Overview
+
+The `IHP.ViewSupport` module provides the foundation for building views in IHP. It includes:
+
+- View type class and rendering functions
+- HSX templating support
+- Form helpers and CSS framework integration
+- Helper functions for URLs and paths
+- Time formatting utilities
+
+This module is automatically available via `IHP.ViewPrelude` in all view files.
+
+## Core Types
+
+<ParamField path="View" type="Type Class">
+  The main type class that all views must implement.
+  
+  ```haskell
+  data ShowPostView = ShowPostView { post :: Post }
+  
+  instance View ShowPostView where
+      html ShowPostView { .. } = [hsx|
+          <div class="post">
+              <h1>{post.title}</h1>
+              <p>{post.body}</p>
+          </div>
+      |]
+  ```
+</ParamField>
+
+<ParamField path="Html" type="Type Alias">
+  Type alias for `HtmlWithContext ControllerContext`. This is the return type of view rendering.
+</ParamField>
+
+<ParamField path="Layout" type="Type Alias">
+  Type alias for `Html -> Html`. A layout wraps view content.
+  
+  ```haskell
+  myLayout :: Layout
+  myLayout inner = [hsx|
+      <!DOCTYPE html>
+      <html>
+          <body>
+              <header>My App</header>
+              {inner}
+          </body>
+      </html>
+  |]
+  ```
+</ParamField>
+
+## View Type Class
+
+<ParamField path="html" type="theView -> Html">
+  Render the view as HTML. Required method.
+  
+  ```haskell
+  instance View IndexView where
+      html IndexView { posts } = [hsx|
+          <div class="posts">
+              {forEach posts renderPost}
+          </div>
+      |]
+  ```
+</ParamField>
+
+<ParamField path="beforeRender" type="theView -> IO ()">
+  Hook that runs before rendering. Optional method.
+  
+  ```haskell
+  instance View MyView where
+      beforeRender view = do
+          setLayout customLayout
+      
+      html MyView { .. } = [hsx|...|]
+  ```
+</ParamField>
+
+<ParamField path="json" type="theView -> JSON.Value">
+  Render the view as JSON. Optional method.
+  
+  ```haskell
+  instance View ApiUserView where
+      html view = error "Not implemented"
+      json ApiUserView { user } = toJSON user
+  ```
+</ParamField>
+
+## Template Helpers
+
+<ParamField path="forEach" type="Foldable f => f a -> (a -> Html) -> Html">
+  Iterate over a collection and render each item.
+  
+  ```haskell
+  [hsx|
+      <ul>
+          {forEach posts \post -> [hsx|
+              <li>{post.title}</li>
+          |]}
+      </ul>
+  |]
+  ```
+</ParamField>
+
+<ParamField path="currentViewId" type="Typeable view => Text">
+  Get a string ID for the current view (e.g., "posts-show").
+  
+  ```haskell
+  -- In Web.View.Posts.Show
+  [hsx|<div id={currentViewId}>...</div>|]
+  -- Renders: <div id="posts-show">...</div>
+  ```
+</ParamField>
+
+<ParamField path="nl2br" type="Textual text => text -> Html">
+  Convert newlines to `<br>` tags.
+  
+  ```haskell
+  [hsx|<p>{nl2br post.body}</p>|]
+  -- "Hello\nWorld" becomes "Hello<br/>World"
+  ```
+</ParamField>
+
+<ParamField path="stripTags" type="Text -> Text">
+  Remove HTML tags from text.
+  
+  ```haskell
+  let clean = stripTags "<b>Hello</b> World"
+  -- Returns: "Hello World"
+  ```
+</ParamField>
+
+## URL and Path Functions
+
+<ParamField path="pathTo" type="HasPath action => action -> Text">
+  Generate a URL path for an action.
+  
+  ```haskell
+  [hsx|<a href={pathTo ShowPostAction { postId }}>View Post</a>|]
+  -- Generates: <a href="/ShowPost?postId=...">View Post</a>
+  ```
+</ParamField>
+
+<ParamField path="urlTo" type="HasPath action => action -> Text">
+  Generate a complete URL for an action (includes domain).
+  
+  ```haskell
+  let url = urlTo ShowPostAction { postId }
+  -- Returns: "https://example.com/ShowPost?postId=..."
+  ```
+</ParamField>
+
+<ParamField path="isActivePath" type="PathString controller => controller -> Bool">
+  Check if the current request path matches the given path.
+  
+  ```haskell
+  [hsx|
+      <a href={PostsAction} class={classes ["nav-link", ("active", isActivePath PostsAction)]}>
+          Posts
+      </a>
+  |]
+  ```
+</ParamField>
+
+<ParamField path="isActivePathOrSub" type="PathString controller => controller -> Bool">
+  Check if the current path starts with the given path.
+  
+  ```haskell
+  -- If current path is /Posts/123
+  isActivePathOrSub PostsAction -- Returns: True
+  ```
+</ParamField>
+
+<ParamField path="isActiveController" type="Data controller => controller -> Bool">
+  Check if the current controller matches.
+  
+  ```haskell
+  when (isActiveController PostsController) $ ...
+  ```
+</ParamField>
+
+<ParamField path="isActiveAction" type="HasPath action => action -> Bool">
+  Check if the current action matches.
+  
+  ```haskell
+  [hsx|
+      <li class={classes [("active", isActiveAction ShowPostAction { postId })]}>
+          ...
+      </li>
+  |]
+  ```
+</ParamField>
+
+## Asset Management
+
+<ParamField path="assetPath" type="Text -> Text">
+  Add cache buster to asset paths.
+  
+  ```haskell
+  [hsx|<script src={assetPath "/app.js"}></script>|]
+  -- Renders: <script src="/app.js?v=9be8995c..."></script>
+  ```
+</ParamField>
+
+<ParamField path="assetVersion" type="Text">
+  Get the current asset version string.
+  
+  ```haskell
+  let version = assetVersion
+  -- Returns: "9be8995c-7055-43d9-a1b2-43e05c210271"
+  ```
+  
+  Configure via the `IHP_ASSET_VERSION` environment variable.
+</ParamField>
+
+## Request Access
+
+<ParamField path="theRequest" type="Request">
+  Access the current WAI Request.
+  
+  ```haskell
+  let path = theRequest.rawPathInfo
+  let method = theRequest.requestMethod
+  ```
+</ParamField>
+
+## CSS Framework Integration
+
+<ParamField path="theCSSFramework" type="CSSFramework">
+  Get the current CSS framework configuration.
+  
+  ```haskell
+  let framework = theCSSFramework
+  ```
+</ParamField>
+
+<ParamField path="fromCSSFramework" type="KnownSymbol field => Proxy field -> appliedFunction">
+  Access a CSS framework function.
+  
+  ```haskell
+  let submitClass = fromCSSFramework @"submitClass"
+  ```
+</ParamField>
+
+## Form Helpers
+
+From `IHP.View.Form`:
+
+<ParamField path="formFor" type="record -> (FormContext record -> Html) -> Html">
+  Create a form for a record with automatic CSRF protection.
+  
+  ```haskell
+  renderForm :: Post -> Html
+  renderForm post = formFor post \form -> [hsx|
+      {textField #title}
+      {textField #body}
+      {submitButton}
+  |]
+  ```
+</ParamField>
+
+<ParamField path="textField" type="KnownSymbol fieldName => Proxy fieldName -> Html">
+  Render a text input field.
+  
+  ```haskell
+  {textField #email}
+  ```
+</ParamField>
+
+<ParamField path="submitButton" type="Html">
+  Render a submit button.
+  
+  ```haskell
+  {submitButton { label = "Create Post" }}
+  ```
+</ParamField>
+
+<ParamField path="selectField" type="KnownSymbol fieldName => Proxy fieldName -> [a] -> Html">
+  Render a select dropdown.
+  
+  ```haskell
+  {selectField #status ["draft", "published", "archived"]}
+  ```
+</ParamField>
+
+<ParamField path="checkboxField" type="KnownSymbol fieldName => Proxy fieldName -> Html">
+  Render a checkbox.
+  
+  ```haskell
+  {checkboxField #isPublished}
+  ```
+</ParamField>
+
+<ParamField path="hiddenField" type="KnownSymbol fieldName => Proxy fieldName -> Html">
+  Render a hidden input field.
+  
+  ```haskell
+  {hiddenField #userId}
+  ```
+</ParamField>
+
+## Time Formatting
+
+From `IHP.View.TimeAgo`:
+
+<ParamField path="timeAgo" type="UTCTime -> Html">
+  Render a time as "5 minutes ago", "2 hours ago", etc.
+  
+  ```haskell
+  [hsx|<span>Posted {timeAgo post.createdAt}</span>|]
+  -- Renders: <span>Posted 5 minutes ago</span>
+  ```
+</ParamField>
+
+## Validation Support
+
+<ParamField path="getValidationFailure" type="KnownSymbol field => Proxy field -> Maybe Text">
+  Get validation error for a field.
+  
+  ```haskell
+  case getValidationFailure #email of
+      Just error -> [hsx|<div class="error">{error}</div>|]
+      Nothing -> mempty
+  ```
+</ParamField>
+
+<ParamField path="hasValidationError" type="KnownSymbol field => Proxy field -> Bool">
+  Check if a field has a validation error.
+  
+  ```haskell
+  let inputClass = if hasValidationError #email
+      then "form-control is-invalid"
+      else "form-control"
+  ```
+</ParamField>
+
+## Flash Messages
+
+<ParamField path="renderFlashMessages" type="Html">
+  Render all flash messages.
+  
+  ```haskell
+  -- In layout:
+  [hsx|
+      <body>
+          {renderFlashMessages}
+          {inner}
+      </body>
+  |]
+  ```
+</ParamField>
+
+## Auto Refresh
+
+From `IHP.AutoRefresh.View`:
+
+<ParamField path="autoRefresh" type="Html">
+  Enable auto-refresh for the current view.
+  
+  ```haskell
+  instance View DashboardView where
+      html DashboardView { .. } = [hsx|
+          {autoRefresh}
+          <div>Dashboard content that updates in real-time</div>
+      |]
+  ```
+</ParamField>
+
+## Modal Support
+
+From `IHP.Modal.ViewFunctions`:
+
+<ParamField path="modal" type="Html -> Html">
+  Render content in a modal.
+  
+  ```haskell
+  [hsx|
+      {modal [hsx|
+          <h2>Delete Confirmation</h2>
+          <p>Are you sure?</p>
+      |]}
+  |]
+  ```
+</ParamField>
+
+## Live Reload
+
+<ParamField path="liveReloadWebsocketUrl" type="Text">
+  Get the WebSocket URL for live reload in development.
+  
+  ```haskell
+  let wsUrl = liveReloadWebsocketUrl
+  -- Returns: "ws://localhost:8001"
+  ```
+</ParamField>
+
+## HSX Helpers
+
+<ParamField path="hsx" type="QuasiQuoter">
+  Quasi-quoter for HSX templates.
+  
+  ```haskell
+  [hsx|<div class="container">{content}</div>|]
+  ```
+</ParamField>
+
+<ParamField path="toHtml" type="ToHtml a => a -> Html">
+  Convert a value to HTML.
+  
+  ```haskell
+  {toHtml "Hello World"}
+  {toHtml 42}
+  ```
+</ParamField>
+
+<ParamField path="preEscapedToHtml" type="Text -> Html">
+  Insert raw HTML without escaping.
+  
+  ```haskell
+  {preEscapedToHtml "<strong>Bold</strong>"}
+  ```
+</ParamField>
+
+## See Also
+
+- [View Guide](/views)
+- [HSX Templating](/hsx)
+- [Form Guide](/frontend/forms)
+- [Haddock: IHP.ViewSupport](https://ihp.digitallyinduced.com/api-docs/IHP-ViewSupport.html)
+- [Haddock: IHP.View.Form](https://ihp.digitallyinduced.com/api-docs/IHP-View-Form.html)

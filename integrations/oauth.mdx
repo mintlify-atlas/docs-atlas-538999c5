@@ -1,0 +1,518 @@
+---
+title: OAuth Integration
+description: Add third-party authentication to your IHP application with Google and GitHub OAuth login
+---
+
+IHP provides built-in support for OAuth login with third-party identity providers. This allows users to sign in using their existing Google or GitHub accounts, streamlining the registration and login process.
+
+<Note>
+OAuth login functionality requires IHP Pro.
+</Note>
+
+## Supported Providers
+
+IHP currently supports OAuth login with:
+
+- **Google** - Login with Google accounts
+- **GitHub** - Login with GitHub accounts
+
+## Google OAuth
+
+### Installation
+
+<Steps>
+  <Step title="Add the dependency">
+    Open your project's `flake.nix` and add `ihp-oauth-google` to your `haskellDeps`:
+
+    ```nix
+    let
+        ihp = ..
+        haskellEnv = import "${ihp}/NixSupport/default.nix" {
+            ihp = ihp;
+            haskellDeps = p: with p; [
+                # ...
+                ihp-oauth-google  # <----- ADD THIS LINE
+            ];
+            otherDeps = p: with p; [
+            ];
+            projectPath = ./.;
+        };
+    in
+        haskellEnv
+    ```
+  </Step>
+
+  <Step title="Install the package">
+    Stop your local development server and run:
+
+    ```bash
+    devenv up
+    ```
+  </Step>
+</Steps>
+
+### Database Schema
+
+Add a `google_user_id` column to your users table. Open `Application/Schema.sql`:
+
+```sql
+CREATE TABLE users (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    -- ... ,
+    google_user_id TEXT
+);
+```
+
+The column must be nullable with `NULL` as the default value.
+
+### Controller Setup
+
+Create a new file `Web/Controller/GoogleOAuth.hs`:
+
+```haskell
+module Web.Controller.GoogleOAuth where
+
+import Web.Controller.Prelude
+import Web.Controller.Sessions ()
+import IHP.OAuth.Google.Controller
+import qualified IHP.OAuth.Google.Types as Google
+
+instance Controller Google.GoogleOAuthController where
+    action Google.NewSessionWithGoogleAction = newSessionWithGoogleAction @User
+    action Google.GoogleConnectCallbackAction = googleConnectCallbackAction @User
+
+instance GoogleOAuthControllerConfig User where
+    beforeCreateUser user googleClaims = user 
+        |> set #isConfirmed True  -- Auto-confirm user's email
+```
+
+### Routing
+
+Open `Web/Routes.hs` and:
+
+1. Import the type definition:
+   ```haskell
+   import IHP.OAuth.Google.Types
+   ```
+
+2. Enable AutoRoute:
+   ```haskell
+   instance AutoRoute GoogleOAuthController
+   ```
+
+### FrontController
+
+Open `Web/FrontController.hs` and:
+
+1. Add imports:
+   ```haskell
+   import IHP.OAuth.Google.Types
+   import Web.Controller.GoogleOAuth
+   ```
+
+2. Add the controller:
+   ```haskell
+   instance FrontController WebApplication where
+       controllers =
+           [ startPage StartpageAction
+           -- ...
+           , parseRoute @GoogleOAuthController  -- <----- ADD THIS
+           ]
+   ```
+
+### View Prelude
+
+Update `Web/View/Prelude.hs` to include Google OAuth types:
+
+```haskell
+module Web.View.Prelude
+( module IHP.ViewPrelude
+-- ...
+, module IHP.OAuth.Google.Types  -- <---- ADD THIS
+) where
+
+import IHP.ViewPrelude
+-- ...
+import IHP.OAuth.Google.Types      -- <---- ADD THIS
+```
+
+This allows you to use `pathTo NewSessionWithGoogleAction` without explicit imports.
+
+### Configuration
+
+<Steps>
+  <Step title="Get Google Client ID">
+    Create a Google Client ID by:
+    1. Logging into the [Google API Console](https://console.cloud.google.com/)
+    2. Creating a new project
+    3. Enabling OAuth and configuring the consent screen
+    
+    [Follow this guide](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid) for detailed instructions.
+
+    Your client ID will look like: `1234567890-abc123def456.apps.googleusercontent.com`
+  </Step>
+
+  <Step title="Configure IHP">
+    Open `Config/Config.hs` and add:
+
+    ```haskell
+    import IHP.OAuth.Google.Config
+
+    config :: ConfigBuilder
+    config = do
+        option Development
+        option (AppHostname "localhost")
+
+        initGoogleOAuth  -- <--- ADD THIS
+    ```
+  </Step>
+
+  <Step title="Set environment variable">
+    Open your `start` script and add:
+
+    ```bash
+    export OAUTH_GOOGLE_CLIENT_ID="YOUR_GOOGLE_CLIENT_ID"
+
+    RunDevServer
+    ```
+
+    Replace `YOUR_GOOGLE_CLIENT_ID` with your actual client ID.
+  </Step>
+
+  <Step title="Restart dev server">
+    Restart your local development server to apply the changes.
+  </Step>
+</Steps>
+
+### Testing
+
+Visit `http://localhost:8000/NewSessionWithGoogle` and click the "Login with Google" button. It should open a Google login dialog and then log you into the app.
+
+If you see an error, check the JavaScript console. A common issue is that `localhost:8000` isn't whitelisted in your Google Client ID settings.
+
+### Adding Login Button
+
+To add a "Login with Google" button to your login page, open `Web/View/Sessions/New.hs`:
+
+```haskell
+module Web.View.Sessions.New where
+import Web.View.Prelude
+import IHP.AuthSupport.View.Sessions.New
+
+instance View (NewView User) where
+    html NewView { .. } = [hsx|
+        <div class="h-100" id="sessions-new">
+            <div class="d-flex align-items-center">
+                <div class="w-100">
+                    <div style="max-width: 400px" class="mx-auto mb-5">
+                        <h5>Please login</h5>
+                        {renderForm user}
+
+                        {loginWithGoogle}
+                    </div>
+                </div>
+            </div>
+        </div>
+    |]
+
+loginWithGoogle :: Html
+loginWithGoogle = [hsx|
+    <div id="g_id_onload"
+         data-client_id={googleClientId}
+         data-context="signin"
+         data-ux_mode="popup"
+         data-callback="onGoogleLogin"
+         data-auto_prompt="false">
+    </div>
+
+    <div class="g_id_signin"
+         data-type="standard"
+         data-shape="rectangular"
+         data-theme="outline"
+         data-text="continue_with"
+         data-size="large"
+         data-logo_alignment="left"
+         data-width="304">
+    </div>
+    
+    <form method="POST" action={GoogleConnectCallbackAction} id="new-session-with-google-form">
+        <input type="hidden" name="jwt" value=""/>
+    </form>
+    
+    <script src="/google-login.js?v2"></script>
+    <script src="https://accounts.google.com/gsi/client"></script>
+|]
+    where
+        googleClientId :: Text = "YOUR GOOGLE CLIENT ID"
+```
+
+Create `static/google-login.js`:
+
+```javascript
+function onGoogleLogin(response) {
+    var form = document.getElementById('new-session-with-google-form');
+    form.querySelector('input[name="jwt"]').value = response.credential;
+    form.submit();
+}
+```
+
+### Troubleshooting Docker/Nix Images
+
+If Google login works locally but fails in Docker with a certificate error:
+
+```
+HttpExceptionRequest ... (InternalException (HandshakeFailed (Error_Protocol "certificate has unknown CA" UnknownCa)))
+```
+
+Your image is missing root CA certificates. Include CA certificates and set `SSL_CERT_FILE`/`NIX_SSL_CERT_FILE` environment variables in your Docker image.
+
+## GitHub OAuth
+
+### Installation
+
+<Steps>
+  <Step title="Add the dependency">
+    Open your project's `default.nix` and add `ihp-oauth-github`:
+
+    ```nix
+    let
+        ihp = ..
+        haskellEnv = import "${ihp}/NixSupport/default.nix" {
+            ihp = ihp;
+            haskellDeps = p: with p; [
+                # ...
+                ihp-oauth-github  # <----- ADD THIS LINE
+            ];
+            otherDeps = p: with p; [
+            ];
+            projectPath = ./.;
+        };
+    in
+        haskellEnv
+    ```
+  </Step>
+
+  <Step title="Install the package">
+    Stop your development server and run:
+
+    ```bash
+    devenv up
+    ```
+  </Step>
+</Steps>
+
+### Database Schema
+
+Add a `github_user_id` column to your users table. Open `Application/Schema.sql`:
+
+```sql
+CREATE TABLE users (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    -- ... ,
+    github_user_id INT DEFAULT NULL UNIQUE
+);
+```
+
+### Controller Setup
+
+Create `Web/Controller/GithubOAuth.hs`:
+
+```haskell
+module Web.Controller.GithubOAuth where
+
+import Web.Controller.Prelude
+import Web.Controller.Sessions ()
+import IHP.OAuth.Github.Controller
+import qualified IHP.OAuth.Github.Types as Github
+
+instance Controller Github.GithubOAuthController where
+    action Github.NewSessionWithGithubAction = newSessionWithGithubAction @User
+    action Github.GithubConnectCallbackAction = githubConnectCallbackAction @User
+
+instance GithubOAuthControllerConfig User where
+    beforeCreateUser user githubUser = user 
+        |> set #isConfirmed True  -- Auto-confirm email
+
+    afterCreateUser user = do
+        -- Called after a new user is created
+        -- E.g. send a welcome email:
+        -- sendMail WelcomeMail { .. }
+        pure ()
+
+    beforeLogin user githubUser = do
+        -- Called before the user is logged in
+        -- E.g. set profile picture from GitHub:
+        -- user
+        --     |> setJust #profilePicture githubUser.avatarUrl
+        --     |> setJust #githubName githubUser.login
+        --     |> pure
+        pure user
+```
+
+### Routing
+
+Open `Web/Routes.hs` and:
+
+1. Import the type:
+   ```haskell
+   import IHP.OAuth.Github.Types
+   ```
+
+2. Enable AutoRoute:
+   ```haskell
+   instance AutoRoute GithubOAuthController
+   ```
+
+### FrontController
+
+Open `Web/FrontController.hs` and:
+
+1. Add imports:
+   ```haskell
+   import IHP.OAuth.Github.Types
+   import Web.Controller.GithubOAuth
+   ```
+
+2. Add the controller:
+   ```haskell
+   instance FrontController WebApplication where
+       controllers =
+           [ startPage StartpageAction
+           -- ...
+           , parseRoute @GithubOAuthController  -- <----- ADD THIS
+           ]
+   ```
+
+### View Prelude
+
+Update `Web/View/Prelude.hs`:
+
+```haskell
+module Web.View.Prelude
+( module IHP.ViewPrelude
+-- ...
+, module IHP.OAuth.Github.Types  -- <---- ADD THIS
+) where
+
+import IHP.ViewPrelude
+-- ...
+import IHP.OAuth.Github.Types      -- <---- ADD THIS
+```
+
+### Configuration
+
+<Steps>
+  <Step title="Create GitHub App">
+    [Follow GitHub's guide](https://docs.github.com/en/developers/apps/building-github-apps/creating-a-github-app) to create a GitHub App.
+
+    Set the **Callback URL** to: `http://localhost:8000/GithubConnectCallback`
+
+    Save your Client ID and Client Secret.
+  </Step>
+
+  <Step title="Configure IHP">
+    Open `Config/Config.hs` and add:
+
+    ```haskell
+    import IHP.OAuth.Github.Config
+
+    config :: ConfigBuilder
+    config = do
+        option Development
+        option (AppHostname "localhost")
+
+        initGithubOAuth  -- <--- ADD THIS
+    ```
+  </Step>
+
+  <Step title="Set environment variables">
+    Open your `start` script and add:
+
+    ```bash
+    export OAUTH_GITHUB_CLIENT_ID="YOUR_GITHUB_CLIENT_ID"
+    export OAUTH_GITHUB_CLIENT_SECRET="YOUR_GITHUB_SECRET"
+
+    RunDevServer
+    ```
+
+    Replace the placeholders with your actual values.
+  </Step>
+
+  <Step title="Restart dev server">
+    Restart your local development server.
+  </Step>
+</Steps>
+
+### Testing
+
+Visit `http://localhost:8000/NewSessionWithGithub` and click "Login with Github". It will redirect to GitHub for authentication and then log you into your app.
+
+### Adding Login Button
+
+Add a GitHub login button to your login page:
+
+```haskell
+<a href={NewSessionWithGithubAction} target="_self" class="btn btn-primary">
+    Continue with GitHub
+</a>
+```
+
+<Note>
+Use `target="_self"` to prevent Turbolinks from interfering with the GitHub redirect.
+</Note>
+
+## Customization
+
+### Email Confirmation
+
+By default, the examples auto-confirm user emails:
+
+```haskell
+beforeCreateUser user googleClaims = user 
+    |> set #isConfirmed True
+```
+
+Remove this line if you want to require email confirmation.
+
+### Custom User Data
+
+Use the lifecycle hooks to customize user creation:
+
+```haskell
+instance GithubOAuthControllerConfig User where
+    beforeCreateUser user githubUser = user
+        |> set #isConfirmed True
+        |> setJust #name githubUser.name
+        |> setJust #profilePicture githubUser.avatarUrl
+
+    afterCreateUser user = do
+        sendMail WelcomeMail { .. }
+        pure ()
+
+    beforeLogin user githubUser = do
+        -- Update profile picture on each login
+        user
+            |> setJust #profilePicture githubUser.avatarUrl
+            |> updateRecord
+```
+
+## Best Practices
+
+1. **Environment Variables**: Never hardcode OAuth credentials in your code
+2. **HTTPS in Production**: Always use HTTPS for OAuth callbacks in production
+3. **Scope Management**: Request only the OAuth scopes you need
+4. **Error Handling**: Implement proper error handling for OAuth failures
+5. **User Linking**: Consider allowing users to link multiple OAuth providers to one account
+
+## Security Considerations
+
+- **Validate Callback URLs**: Ensure your OAuth callback URLs are properly configured
+- **CSRF Protection**: IHP handles CSRF protection automatically
+- **State Parameter**: OAuth implementations use the state parameter for security
+- **Secure Storage**: OAuth tokens are not stored by default; only user IDs are saved
+
+## See Also
+
+- [Authentication](/features/authentication)
+- [Sessions](/features/session)
+- [Authorization](/features/authorization)

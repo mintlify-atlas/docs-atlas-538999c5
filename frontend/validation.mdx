@@ -1,0 +1,452 @@
+---
+title: Validation
+description: Validate incoming data with type-safe validators and automatic error rendering
+---
+
+## Introduction
+
+IHP provides a simple infrastructure for validating incoming data. This guide covers validating new and existing records, as well as complex validations with database access.
+
+## Quickstart
+
+### Setting up the controller
+
+Assume we have a `Posts` controller with `title` and `body` fields. The `CreatePostAction` looks like:
+
+```haskell
+action CreatePostAction = do
+    let post = newRecord @Post
+    post
+        |> buildPost
+        |> ifValid \case
+            Left post -> render NewView { .. }
+            Right post -> do
+                post <- post |> createRecord
+                setSuccessMessage "Post created"
+                redirectTo PostsAction
+```
+
+This action is executed when a form like the one below is submitted:
+
+```haskell
+module Web.View.Posts.New where
+import Web.View.Prelude
+
+data NewView = NewView { post :: Post }
+
+instance View NewView where
+    html NewView { .. } = [hsx|
+        <h1>New Post</h1>
+        {renderForm post}
+    |]
+
+renderForm :: Post -> Html
+renderForm post = formFor post [hsx|
+    {textField #title}
+    {textField #body}
+    {submitButton}
+|]
+```
+
+### Adding Validation Logic
+
+To make sure that the `title` and `body` are not empty, use `validateField ... nonEmpty`:
+
+```haskell
+action CreatePostAction = do
+    let post = newRecord @Post
+    post
+        |> buildPost
+        |> validateField #title nonEmpty
+        |> validateField #body nonEmpty
+        |> ifValid \case
+            Left post -> render NewView { post }
+            Right post -> do
+                post <- post |> createRecord
+                setSuccessMessage "Post created"
+                redirectTo PostsAction
+
+buildPost post = post
+    |> fill @'["title", "body"]
+```
+
+The syntax to validate a record is always:
+
+```haskell
+record
+    |> validateField #fieldName validatorName
+```
+
+## Common Validators
+
+Here is a list of the most common validators:
+
+**Works with Text fields:**
+- `|> validateField #name nonEmpty`
+- `|> validateField #email isEmail`
+- `|> validateField #phoneNumber isPhoneNumber`
+
+**Works with ints:**
+- `|> validateField #rating (isInRange (1, 10))`
+
+You can find [the full list of built-in validators in the API Documentation](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-ValidateField.html).
+
+## Validate `Maybe` Fields
+
+You can use all the existing validators with `Maybe` fields. The validator will only be applied when the field is not `Nothing`:
+
+```haskell
+buildPost :: Post -> Post
+buildPost post = post
+    |> validateField #title nonEmpty
+    -- Assuming sourceUrl is optional.
+    |> validateField #sourceUrl (validateMaybe nonEmpty)
+```
+
+## Fill Validation
+
+When using `fill`, like `|> fill @'["title", "body"]`, any error parsing the input is also added as a validation error.
+
+For example, when `fill` fills in an integer attribute, but the string `"hello"` is submitted, an error will be added to the record and the record is not valid anymore. The record attribute will keep its old value (before applying `fill`) and later re-render in the error case of `ifValid`.
+
+## Rendering Errors
+
+When a post with an empty title is submitted to this action, an error message will be written into the record. The call to `|> ifValid` will see the error and run the `Left post -> render NewView { post }`, which displays the form to the user again.
+
+The default form helpers like `{textField #title}` automatically render the error message below the field:
+
+![Validation Error Message Below Title Input](images/first-project/title_non_empty.png)
+
+## Validating An Email Is Unique
+
+For example, when dealing with users, you usually want to make sure that an email is only used once for a single user. You can use `|> validateIsUnique #email` to validate that an email is unique for a given record.
+
+This function queries the database and checks whether there exists a record with the same email value. The function ignores the current entity of course.
+
+This function does IO, so any further arrows have to be `>>=`:
+
+```haskell
+action CreateUserAction = do
+    let user = newRecord @User
+    user
+        |> fill @'["email"]
+        |> validateIsUnique #email
+        >>= ifValid \case
+            Left user -> render NewView { .. }
+            Right user -> do
+                createRecord user
+                redirectTo UsersAction
+```
+
+### Case Insensitive Uniqueness
+
+Usually emails like `someone@example.com` and `Someone@example.com` belong to the same person. Use `validateIsUniqueCaseInsensitive` to ignore the case:
+
+```haskell
+action CreateUserAction = do
+    let user = newRecord @User
+    user
+        |> fill @'["email"]
+        |> validateIsUniqueCaseInsensitive #email
+        >>= ifValid \case
+            Left user -> render NewView { .. }
+            Right user -> do
+                createRecord user
+                redirectTo UsersAction
+```
+
+For good performance in production, add an index in your `Schema.sql`:
+
+```sql
+CREATE UNIQUE INDEX users_email_index ON users ((LOWER(email)));
+```
+
+## Sharing Between Create and Update Action
+
+Usually, you have a lot of the same validation logic when creating and updating a record. To avoid duplicating the validation rules, apply them inside the `buildPost` function:
+
+```haskell
+action CreatePostAction = do
+    let post = newRecord @Post
+    post
+        |> buildPost
+        |> ifValid \case
+            Left post -> render NewView { post }
+            Right post -> do
+                post <- post |> createRecord
+                setSuccessMessage "Post created"
+                redirectTo PostsAction
+
+buildPost post = post
+    |> fill @'["title", "body"]
+    |> validateField #title nonEmpty
+    |> validateField #body nonEmpty
+```
+
+In case a validation should only be used for e.g. updating a record or creating a record, just keep it there in the action only and don't move it to the `buildPost` function.
+
+## Creating a Custom Validator
+
+You can write your constraint like this:
+
+```haskell
+nonEmpty :: Text -> ValidatorResult
+nonEmpty "" = Failure "This field cannot be empty"
+nonEmpty _ = Success
+
+isAge :: Int -> ValidatorResult
+isAge = isInRange (0, 100)
+```
+
+Then call it like:
+
+```haskell
+user |> validateField #age isAge
+```
+
+## Creating a Custom Validator that Uses IO
+
+Use `validateFieldIO` to validate a field based upon a value that is fetched from the database. The below example shows how to validate that a post's `title` field contains a unique value:
+
+```haskell
+-- In Controller/Posts.hs or Helper/Controller.hs
+-- Add custom validator function that checks if the post's title is unique.
+titleIsUnique :: (?modelContext :: ModelContext) => Post -> Text -> IO ValidatorResult
+titleIsUnique post title = do
+    exists <-
+        query @Post
+            |> filterWhere (#title, post.title)
+            |> filterWhereNot (#id, post.id)
+            |> fetchExists
+
+    if exists
+        then pure $ Failure "Title is not unique"
+        else pure Success
+
+-- In Controller/Posts.hs
+buildPost :: (?modelContext :: ModelContext, ?context :: ControllerContext) => Post -> IO Post
+buildPost post = post
+    |> fill @'["title", "body"]
+    |> (\post -> validateFieldIO #title (titleIsUnique post) post)
+```
+
+In your controller, wherever you use the `buildPost` function, since it is now inside IO, use the `>>=` (bind) operator:
+
+```haskell
+post
+    |> buildPost
+    >>= ifValid \case
+        Left post -> do
+            render NewView { .. }
+        Right post -> do
+            post <- post |> createRecord
+            setSuccessMessage "Post created"
+            redirectTo PostsAction
+```
+
+## Checking If A Record Is Valid
+
+Use `ifValid` to check for validity of a record:
+
+```haskell
+post |> ifValid \case
+    Left post -> do
+        putStrLn "The Post is invalid"
+    Right post -> do
+        putStrLn "The Post is valid"
+```
+
+You can also use it like this:
+
+```haskell
+let message = post |> ifValid \case
+    Left post -> "The post is invalid"
+    Right post -> "The post is valid"
+
+putStrLn message
+```
+
+## Customizing Error Messages
+
+### Use `withCustomErrorMessage`
+
+Customize the error message when validation failed:
+
+```haskell
+user
+    |> fill @'["firstname"]
+    |> validateField #firstname (nonEmpty |> withCustomErrorMessage "Please enter your firstname")
+```
+
+When `nonEmpty` adds an error to the user, the message `Please enter your firstname` will be used instead of the default `This field cannot be empty`.
+
+### Use `withCustomErrorMessageIO`
+
+Customize the error message when using IO functions:
+
+```haskell
+user
+    |> fill @'["email"]
+    |> withCustomErrorMessageIO "Email Has Already Been Used" validateIsUnique #email
+    >>= ifValid \case
+        Left user -> ...
+        Right user -> ...
+```
+
+## Security Concerns and Conditional `fill`
+
+It's important to remember that any kind of validations you might have on the form level are not enough to ensure the security of your application. You should always have validations on the backend as well. The user might manipulate the form data and send invalid data to your application.
+
+You don't have to always `fill` all fields in one go. Sometimes you'd like to conditionally `fill` based on the current user or based on the current logic.
+
+Let's say we have a `Comment` record that has a `postId` that references a `Post`, a `body` field, and a moderation field allowing admin users to indicate if they are approved or rejected.
+
+```sql
+-- Schema.sql
+CREATE TYPE comment_moderation AS ENUM ('comment_moderation_pending', 'comment_moderation_approved', 'comment_moderation_rejected');
+
+CREATE TABLE comments (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    post_id UUID NOT NULL,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+    comment_moderation comment_moderation NOT NULL
+);
+```
+
+We'll start with the `postId`. Once a comment is referencing a post it will never have the reference change. So it means we should fill it only upon creation:
+
+```haskell
+buildComment comment = comment
+    |> fill @'["body", "commentModeration"]
+    |> fillIsNew
+    where
+        fillIsNew record =
+            if isNew record
+            then fill @'["postId"] record
+            else record
+```
+
+Next, imagine we have a `currentUserIsAdmin` indicating if the current user is an admin. We'd like to allow only admins to set the moderation status of a comment:
+
+```haskell
+currentUserIsAdmin :: (?context :: ControllerContext) => Bool
+currentUserIsAdmin =
+    case currentUserOrNothing of
+        Just user -> user.email == "admin@example.com"
+        Nothing -> False
+
+buildComment comment = comment
+    |> fill @'["body"]
+    |> fillIsNew
+    |> fillCurrentUserIsAdmin
+    where
+        fillIsNew record =
+            if isNew record
+            then fill @'["postId"] record
+            else record
+
+        fillCurrentUserIsAdmin record =
+            if currentUserIsAdmin
+            then fill @'["commentModeration"] record
+            else record
+```
+
+## Internals
+
+### `validateField`
+
+The primary operation is `validateField #field validationFunction record`.
+
+This function does the following:
+
+1. Read the `#field` from the record
+2. Apply the `validationFunction` to the field value
+3. When the validator returns errors, store the errors inside the `meta` attribute of the record
+
+The `validateField` function expects the `record` to have a field `meta :: MetaBag`. This `meta` field is used to store validation errors.
+
+```haskell
+data Post = Post { title :: Text, meta :: MetaBag }
+
+let post = Post { title = "" , meta = def }
+
+post |> validateField #title nonEmpty
+-- This will return:
+--
+-- Post {
+--     title = "",
+--     meta = MetaBag {
+--         annotations = [
+--             ("title", "This field cannot be empty")
+--         ]
+--     }
+-- }
+```
+
+As you can see, the errors are tracked inside the `MetaBag`. When you apply another `validateField` to the record, the errors will be appended to the `annotations` list.
+
+### Validation Functions
+
+A validation function is just a function which, given a value, returns `Success` or `Failure "some error message"`.
+
+Here is an example:
+
+```haskell
+isColor :: Text -> ValidatorResult
+isColor text | ("#" `isPrefixOf` text) && (length text == 7) = Success
+isColor text = Failure "is not a valid color"
+```
+
+Calling `isColor "#ffffff"` will return `Success`. Calling `isColor "something bad"` will result in `Failure "is not a valid color"`.
+
+### Attaching Errors To A Record Field
+
+You can attach errors to a specific field of a record even when not validating:
+
+```haskell
+post
+    |> attachFailure #title "This error will show up"
+```
+
+#### Attaching Errors with HTML
+
+If you try to use HTML code within `attachFailure`, the HTML code will be escaped. Use `attachFailureHtml` instead:
+
+```haskell
+post
+    |> attachFailureHtml #title [hsx|Invalid value. <a href="https://example.com/docs">Check the documentation</a>|]
+```
+
+### Retrieving The First Error Message For A Field
+
+You can access an error for a specific field using `getValidationFailure`:
+
+```haskell
+post
+    |> validateField #name nonEmpty
+    |> getValidationFailure #name
+```
+
+This returns `Just "Field cannot be empty"` or `Nothing` when the post has a title.
+
+### Retrieving All Error Messages For A Record
+
+Access them from the `meta :: MetaBag` attribute:
+
+```haskell
+record.meta.annotations
+```
+
+This returns a `[(Text, Violation)]`, e.g. `[("name", "This field cannot be empty")]`.
+
+## API Reference
+
+- [`validateField`](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-ValidateField.html#v:validateField)
+- [`validateFieldIO`](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-ValidateField.html#v:validateFieldIO)
+- [`validateIsUnique`](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-ValidateIsUnique.html#v:validateIsUnique)
+- [`validateIsUniqueCaseInsensitive`](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-ValidateIsUnique.html#v:validateIsUniqueCaseInsensitive)
+- [`ifValid`](https://ihp.digitallyinduced.com/api-docs/IHP-Controller-Param.html#v:ifValid)
+- [`attachFailure`](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-Types.html#v:attachFailure)
+- [`attachFailureHtml`](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-Types.html#v:attachFailureHtml)
+- [`getValidationFailure`](https://ihp.digitallyinduced.com/api-docs/IHP-ValidationSupport-Types.html#v:getValidationFailure)

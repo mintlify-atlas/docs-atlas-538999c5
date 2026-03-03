@@ -1,0 +1,187 @@
+---
+title: Session Management
+description: Store and manage user session data in IHP with encrypted cookies and built-in flash message support
+---
+
+The session provides a way to store small amounts of information that persists between requests in your IHP application.
+
+<Note>
+Sessions use cryptographically signed and encrypted cookies. The encryption key is automatically generated and stored in `Config/client_session_key.aes`.
+</Note>
+
+<Warning>
+Store only scalar values (strings, numbers, UUIDs) in the session, not complex data structures. For example, store the user ID instead of the entire user record.
+</Warning>
+
+## Writing to the Session
+
+Use `setSession` in your controller actions:
+
+```haskell
+action SessionExampleAction = do
+    setSession "userEmail" "hi@digitallyinduced.com"
+```
+
+Supports multiple data types:
+
+```haskell
+action SessionExampleAction = do
+    setSession "meaningOfLife" (42 :: Int)
+    setSession "isActive" True
+    setSession "userId" someUUID
+```
+
+## Reading from the Session
+
+Use `getSession` to retrieve values:
+
+```haskell
+action SessionExampleAction = do
+    userEmail :: Maybe Text <- getSession "userEmail"
+```
+
+Returns `Just value` if set, `Nothing` otherwise.
+
+With different types:
+
+```haskell
+action SessionExampleAction = do
+    counter :: Maybe Int <- getSession "counter"
+    userId :: Maybe UUID <- getSession "userId"
+    isActive :: Maybe Bool <- getSession "isActive"
+```
+
+## Deleting from the Session
+
+Use `deleteSession` to remove values:
+
+```haskell
+action LogoutAction = do
+    deleteSession "userId"
+    redirectTo HomeAction
+```
+
+## Flash Messages
+
+Flash messages display success or error messages on the next request, then automatically disappear.
+
+### Setting Flash Messages
+
+**Success messages:**
+
+```haskell
+action CreatePostAction = do
+    -- ... create post ...
+    setSuccessMessage "Your Post has been created successfully"
+    redirectTo ShowPostAction { .. }
+```
+
+**Error messages:**
+
+```haskell
+action CreatePostAction = do
+    unless isAllowedToPost do
+        setErrorMessage "You don't have the required permissions"
+        redirectTo NewPostAction
+    -- ...
+```
+
+<Note>
+Flash messages are stored in the session and automatically cleared after the next request (except for redirects and JSON responses).
+</Note>
+
+### Rendering Flash Messages
+
+Add `renderFlashMessages` to your layout:
+
+```haskell
+defaultLayout :: Html -> Html
+defaultLayout inner = [hsx|
+<!DOCTYPE html>
+<html lang="en">
+    <head></head>
+    <body>
+        <div class="container mt-2">
+            {renderFlashMessages}
+            {inner}
+        </div>
+    </body>
+</html>
+|]
+```
+
+Generated HTML:
+
+```html
+<div class="alert alert-success">Your Post has been created successfully</div>
+<div class="alert alert-danger">You don't have the required permissions</div>
+```
+
+### Custom Flash Message Rendering
+
+Access flash messages directly in views:
+
+```haskell
+let flashMessages :: [FlashMessage] = fromFrozenContext
+
+-- Custom rendering
+[hsx|
+    {forEach flashMessages renderCustomFlash}
+|]
+
+renderCustomFlash :: FlashMessage -> Html
+renderCustomFlash (SuccessFlashMessage message) = [hsx|
+    <div class="custom-success">{message}</div>
+|]
+renderCustomFlash (ErrorFlashMessage message) = [hsx|
+    <div class="custom-error">{message}</div>
+|]
+```
+
+## Session Cookie Configuration
+
+Default settings:
+
+- **Max age:** 30 days
+- **SameSite policy:** Lax (CSRF protection)
+- **Encryption:** AES (via clientsession library)
+
+<Note>
+For technical details, see the [clientsession library documentation](https://hackage.haskell.org/package/clientsession-0.9.1.2/docs/Web-ClientSession.html).
+</Note>
+
+## Best Practices
+
+1. **Keep it small** - Sessions are stored in cookies (limited size)
+2. **Store IDs, not objects** - Reference database records by ID
+3. **Use flash messages** - For one-time user feedback
+4. **Clear sensitive data** - Remove session data when no longer needed
+
+## Common Patterns
+
+### Shopping Cart Counter
+
+```haskell
+action AddToCartAction { productId } = do
+    cartCount :: Maybe Int <- getSession "cartCount"
+    let newCount = fromMaybe 0 cartCount + 1
+    setSession "cartCount" newCount
+    redirectTo ProductsAction
+```
+
+### Remember Last Visited Page
+
+```haskell
+action ShowProductAction { productId } = do
+    setSession "lastVisited" ("/products/" <> show productId)
+    -- ...
+```
+
+### User Preferences
+
+```haskell
+action SetThemeAction = do
+    theme :: Text <- param "theme"
+    setSession "preferredTheme" theme
+    redirectBack
+```

@@ -1,0 +1,538 @@
+---
+title: Query Builder
+description: Build type-safe database queries with IHP's query builder for fetching, filtering, and manipulating data
+---
+
+## Introduction
+
+The QueryBuilder module allows you to compose database queries in a type-safe way. Below you can find a short reference to all the commonly-used functions.
+
+## Retrieving Records
+
+### Querying Records
+
+You can retrieve all records of a table using [`query`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:query):
+
+```haskell
+do
+    users <- query @User |> fetch
+    forEach users \user -> do
+        putStrLn user.name
+```
+
+This will run a `SELECT * FROM users` query and put a list of `User` structures.
+
+### Fetching a Single Record
+
+When you have the id of a record, you can also use [`fetch`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetch) to get it from the database:
+
+```haskell
+do
+    let userId :: Id User = ...
+    user <- fetch userId
+    putStrLn user.name
+```
+
+This will run the SQL query `SELECT * FROM users WHERE id = ... LIMIT 1`.
+
+[`fetch`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetch) knows a single entity will be returned for the id, so instead of a list of users, a single user will be returned. In case the entity is not found, an exception is thrown. Use [`fetchOrNothing`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetchOneOrNothing) to get `Nothing` instead of an exception when no result is found.
+
+### Fetching a List of IDs
+
+When have you a list of ids of a single record type, you can also just [`fetch`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetch) them:
+
+```haskell
+do
+    let userIds :: [Id User] = ...
+    users <- fetch userIds
+```
+
+This will run the SQL query `SELECT * FROM users WHERE id IN (...)`. The results in `users` have type `[User]`.
+
+### Fetching a Maybe ID
+
+Sometimes you have an optional id field, like e.g. when having a database schema like this:
+
+```sql
+CREATE TABLE tasks (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY NOT NULL,
+    description TEXT,
+    assigned_user_id UUID
+);
+```
+
+In this case the field `assigned_user_id` can be null. In our action we want to fetch user when it's not null, and return `Nothing` otherwise:
+
+```haskell
+action ShowTask { taskId } = do
+    task <- fetch taskId
+    assignedUser <- fetchOneOrNothing task.assignedUserId
+```
+
+This avoids a lot of boilerplate for wrapping and unwrapping the [`Maybe`](https://ihp.digitallyinduced.com/api-docs/IHP-Prelude.html#t:Maybe) value.
+
+## Running Queries
+
+You can run a query using [`fetch`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetch), [`fetchOneOrNothing`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetchOneOrNothing) or [`fetchOne`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetchOne):
+
+### Many Rows: `fetch`
+
+To run a query which will return many rows use [`fetch`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetch):
+
+```haskell
+example :: IO [Project]
+example = do
+    projects <- query @Project |> fetch
+    -- Query: `SELECT * FROM projects`
+    pure projects
+```
+
+### Maybe Single Row: `fetchOneOrNothing`
+
+To run a query which will maybe return a single row use [`fetchOneOrNothing`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetchOneOrNothing):
+
+```haskell
+example :: IO (Maybe Project)
+example = do
+    project <- query @Project |> fetchOneOrNothing
+    -- Query: `SELECT * FROM projects LIMIT 1`
+    pure project
+```
+
+### Single Row: `fetchOne`
+
+To run a query which will return a single row and **throw an error if no record is found** use [`fetchOne`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetchOne):
+
+```haskell
+example :: IO Project
+example = do
+    project <- query @Project |> fetchOne
+    -- Query: `SELECT * FROM projects LIMIT 1`
+    pure project
+```
+
+## Where Conditions
+
+To specify `WHERE` conditions, you can use [`filterWhere`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhere):
+
+```haskell
+projectsByUser :: UserId -> IO [Project]
+projectsByUser userId = do
+    projects <- query @Project
+            |> filterWhere (#userId, userId)
+            |> filterWhere (#deleted, False)
+            |> fetch
+    -- Query: `SELECT * FROM projects WHERE user_id = <userId> AND deleted = false`
+    pure projects
+```
+
+Use [`filterWhereNot`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhereNot) to negate a condition:
+
+```haskell
+projectsByUser :: UserId -> IO [Project]
+projectsByUser userId = do
+    otherProjects <- query @Project
+            |> filterWhereNot (#userId, userId)
+            |> fetch
+    -- Query: `SELECT * FROM projects WHERE user_id != <userId>`
+    pure otherProjects
+```
+
+There's a case insensitive variant of [`filterWhere`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhere) called [`filterWhereCaseInsensitive`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhereCaseInsensitive):
+
+```haskell
+userByEmail :: Text -> IO (Maybe User)
+userByEmail email = do
+    user <- query @User
+            |> filterWhereCaseInsensitive (#email, email)
+            |> fetchOneOrNothing
+    -- Query: `SELECT * FROM users WHERE LOWER(email) = <email>`
+    pure user
+```
+
+You can also use the more general [`filterWhereSql`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhereSql):
+
+```haskell
+retiredEmployees :: IO [Employee]
+retiredEmployees = do
+    employees <- query @Employee
+             |> filterWhereSql (#retireddate, "IS NOT NULL")
+             |> fetch
+    -- Query: `SELECT * FROM employee WHERE retireddate IS NOT NULL`
+    pure employees
+```
+
+<Note>
+Several other filter-functions for generating `WHERE` clauses exist, such as [`filterWhereIn`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhereIn) and [`filterWhereNotIn`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:filterWhereNotIn) which take lists of items. Read more about these in the [API docs on QueryBuilder](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html)
+</Note>
+
+## Limiting and Offset
+
+### Fetching n Records (LIMIT)
+
+Use [`limit`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:limit) to query only up to `n` records from a table:
+
+```haskell
+do
+    users <- query @User
+        |> orderBy #firstname
+        |> limit 10
+        |> fetch
+```
+
+This will run a `SELECT * FROM users ORDER BY firstname LIMIT 10` query and will return the first 10 users ordered by their `firstname`.
+
+When you are only interested in the first result you can also use [`fetchOne`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetchOne) as a shortcut for [`|> limit 1`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:limit):
+
+```haskell
+do
+    firstUser <- query @User
+        |> orderBy #firstname
+        |> fetchOne
+```
+
+### Skipping n Records (OFFSET)
+
+Use [`offset`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:offset) to skip `n` records from a table:
+
+```haskell
+do
+    users <- query @User
+        |> orderBy #firstname
+        |> offset 10
+        |> fetch
+```
+
+This is most often used together with [`limit`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:limit) to implement paging.
+
+## Order By
+
+You can just use [`orderBy #field`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:orderBy):
+
+```haskell
+projects <- query @Project
+        |> orderBy #createdAt
+        |> fetch
+-- Query: `SELECT * FROM projects ORDER BY created_at`
+```
+
+Nested [`orderBy`s](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:orderBy) work as expected:
+
+```haskell
+projects <- query @Employee
+        |> orderBy #lastname
+        |> orderBy #firstname
+        |> fetch
+-- Query: `SELECT * FROM employees ORDER BY lastname, firstname`
+```
+
+## Counting Records
+
+You can use [`fetchCount`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetchCount) instead of [`fetch`](https://ihp.digitallyinduced.com/api-docs/IHP-Fetch.html#v:fetch) to get the count of records matching the query:
+
+```haskell
+do
+    activeUsersCount :: Int <- query @User
+        |> filterWhere (#isActive, True)
+        |> fetchCount
+
+    -- SELECT COUNT(*) FROM users WHERE is_active = 1
+```
+
+## Distinct Records
+
+Use [`distinct`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:distinct) to fetch distinct records:
+
+```haskell
+do
+    posts <- query @Post
+        |> distinct
+        |> fetch
+```
+
+Or [`distinctOn #tableField`](https://ihp.digitallyinduced.com/api-docs/IHP-QueryBuilder.html#v:distinctOn) to fetch distinct records based on the `#tableField` value:
+
+```haskell
+do
+    users <- query @User
+        |> distinctOn #fullName
+        |> fetch
+```
+
+## Raw SQL Queries
+
+The IHP query builder is designed to be able to easily express many basic sql queries. When your application is growing you will typically hit a point where a complex SQL query cannot be easily expressed with the IHP query builder. In that case it's recommended to use handwritten SQL to access your data.
+
+<Note>
+For compile-time type-checked SQL queries, see the [Typed SQL Guide](typed-sql.html). Typed SQL automatically infers Haskell types from your SQL at compile time, eliminating the need for manual `FromRow` instances.
+</Note>
+
+Use the function [`sqlQuery`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:sqlQuery) to run a raw SQL query:
+
+```haskell
+do
+    result <- sqlQuery "SELECT * FROM projects WHERE id = ?" (Only id)
+
+    -- Query with WHERE id IN
+    result <- sqlQuery "SELECT * FROM projects WHERE id IN ?" (Only (In [id]))
+
+    -- Get a lists of posts with their Comment count
+    let postIds :: [Id Post] = ["1c3a81ff-55ca-42a8-82e0-31d04f642e53"]
+    commentsCount :: [(Id Post, Int)] <- sqlQuery "SELECT post_id, count(*) FROM comments WHERE post_id IN ? GROUP BY post_id" (Only (In postIds))
+```
+
+You might need to specify the expected result type, as type inference might not be able to guess it:
+
+```haskell
+do
+    result :: [Project] <- sqlQuery "SELECT * FROM projects WHERE id = ?" (Only id)
+```
+
+### Dynamic Query Building
+
+If you would like to have your query dynamically built with an argument you could:
+
+```haskell
+import qualified Database.PostgreSQL.Simple as PG
+import qualified Database.PostgreSQL.Simple.Types as PG
+
+do
+    -- Get all Projects
+    let table :: Text = "projects"
+    -- Use PG.Identifier to prevent SQL injection
+    result :: [Project] <- sqlQuery "SELECT * FROM ?" [PG.Identifier table]
+```
+
+### Fetching Single Columns
+
+If you need to fetch only a single column, for example only the ID of a record, you need to help the compiler and type hint the result, with an `Only` prefix. Here's an example of fetching only the IDs of a `project` table, and converting them to `Id Project`:
+
+```haskell
+do
+    allProjectUuids :: [Only UUID] <- sqlQuery "SELECT projects.id FROM projects" ()
+
+    let projectIds =
+            allProjectUuids
+                -- Extract the UUIDs, and convert to an ID.
+                |> map (\(Only uuid) -> Id uuid :: Id Project)
+```
+
+### Scalar Results
+
+The [`sqlQuery`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:sqlQuery) function always returns a list of rows as the result. When the result of your query is a single value (such as an integer or string) use [`sqlQueryScalar`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:sqlQueryScalar):
+
+```haskell
+do
+    count :: Int <- sqlQueryScalar "SELECT COUNT(*) FROM projects" ()
+
+    randomString :: Text <- sqlQueryScalar "SELECT md5(random()::text)" ()
+```
+
+### Dealing With Complex Query Results
+
+Let's say you're querying posts and a count of comments on each post:
+
+```haskell
+do
+    result :: [Post] <- sqlQuery "SELECT posts.id, posts.title, (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id) AS comments_count FROM posts" ()
+```
+
+This will fail at runtime because the result set cannot be decoded as expected. The result has the columns `id`, `title` and `comments_count` but a Post record consists of `id`, `title`, `body`.
+
+The solution here is to write our own data type and mapping code:
+
+```haskell
+module Application.PostsQuery where
+
+import IHP.Prelude
+import IHP.ModelSupport
+import Database.PostgreSQL.Simple
+import Database.PostgreSQL.Simple.FromRow
+
+data PostWithCommentsCount = PostWithCommentsCount
+    { id :: Id Post
+    , title :: Text
+    , commentsCount :: Int
+    }
+    deriving (Eq, Show)
+
+instance FromRow PostWithCommentsCount where
+    fromRow =
+        PostWithCommentsCount
+            <$> field
+            <*> field
+            <*> field
+
+fetchPostsWithCommentsCount :: (?modelContext :: ModelContext) => IO [PostWithCommentsCount]
+fetchPostsWithCommentsCount = do
+    trackTableRead "posts" -- This is needed when using auto refresh, so auto refresh knows that your action is accessing the posts table
+    sqlQuery "SELECT posts.id, posts.title, (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id) AS comments_count FROM posts" ()
+```
+
+You can now fetch posts with their comments count like this:
+
+```haskell
+import Application.PostsQuery as PostsQuery
+
+action MyAction = do
+    postsWithCommentsCount <- PostsQuery.fetchPostsWithCommentsCount
+
+    render MyView { ..}
+```
+
+## Query Shortcuts
+
+### `findBy #field value`
+
+Just a shortcut for `filterWhere (#field, value) |> fetchOne`
+
+```haskell
+-- Long version
+project <- query @Project |> filterWhere (#userId, userId) |> fetchOne
+-- Shorter version
+project <- query @Project |> findBy #userId userId
+```
+
+### `findMaybeBy #field value`
+
+Just a shortcut for `filterWhere (#field, value) |> fetchOneOrNothing`
+
+```haskell
+-- Long version
+project <- query @Project |> filterWhere (#userId, userId) |> fetchOneOrNothing
+-- Shorter version
+project <- query @Project |> findMaybeBy #userId userId
+```
+
+### `findManyBy #field value`
+
+Just a shortcut for `filterWhere (#field, value) |> fetch`
+
+```haskell
+-- Long version
+projects <- query @Project |> filterWhere (#userId, userId) |> fetch
+-- Shorter version
+projects <- query @Project |> findManyBy #userId userId
+```
+
+## Create
+
+### Creating a Single Record
+
+To insert a record into the database, call [`newRecord`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#t:Record) to get an empty record value:
+
+```haskell
+do
+    let user = newRecord @User
+    -- user = User { id = 0000-0000-0000-0000, firstname = "", lastname = "" }
+```
+
+The [`newRecord`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#t:Record) function does not insert the record, it just returns a new empty data structure we can fill with values and then insert into the database.
+
+We can use [`set`](https://ihp.digitallyinduced.com/api-docs/IHP-HaskellSupport.html#v:set) to fill in attributes:
+
+```haskell
+do
+    let user = newRecord @User
+            |> set #firstname "Max"
+            |> set #lastname "Mustermann"
+
+    -- user = User { id = 0000-0000-0000-0000, firstname = "Max", lastname = "Mustermann" }
+```
+
+We use [`createRecord`](https://ihp.digitallyinduced.com/api-docs/IHP-HaskellSupport.html#v:set) to insert the above record into the `users` table:
+
+```haskell
+do
+    user <- newRecord @User
+            |> set #firstname "Max"
+            |> set #lastname "Mustermann"
+            |> createRecord
+    -- user = User { id = "cf633b17-c409-4df5-a2fc-8c3b3d6c2ea7", firstname = "Max", lastname = "Mustermann" }
+```
+
+### Creating Many Records
+
+You can use [`createMany`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:createMany) to insert multiple records with a single `INSERT` statement:
+
+```haskell
+do
+    let usersToBeInserted [ newRecord @User, newRecord @User, ... ]
+    users <- createMany usersToBeInserted
+```
+
+This will run:
+
+```sql
+INSERT INTO users (id, firstname, lastname)
+    VALUES (DEFAULT, "", ""), (DEFAULT, "", "") , (DEFAULT, "", "") ... ;
+```
+
+## Update
+
+The function [`updateRecord`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#t:CanUpdate) runs an `UPDATE` query for a specific record:
+
+```haskell
+do
+    user <- fetch ("cf633b17-c409-4df5-a2fc-8c3b3d6c2ea7" :: Id User)
+    user
+        |> set #lastname "Tester"
+        |> updateRecord
+```
+
+This will set the `lastname` of user `cf633b17-c409-4df5-a2fc-8c3b3d6c2ea7` to `Tester` and run an `UPDATE` query to persist that:
+
+```sql
+UPDATE users SET firstname = firstname, lastname = "Tester" WHERE id = "cf633b17-c409-4df5-a2fc-8c3b3d6c2ea7"
+```
+
+The `UPDATE` query will only update columns that have been changed using `|> set #someField someValue` on the record.
+
+## Delete
+
+### Deleting a Single Record
+
+Use [`deleteRecord`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:deleteRecord) to run a simple `DELETE` query:
+
+```haskell
+do
+    user <- fetch ("cf633b17-c409-4df5-a2fc-8c3b3d6c2ea7" :: Id User)
+    deleteRecord user
+```
+
+This will execute:
+
+```sql
+DELETE FROM users WHERE id = "cf633b17-c409-4df5-a2fc-8c3b3d6c2ea7"
+```
+
+### Deleting Many Records
+
+Use [`deleteRecords`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:deleteRecords) to run a `DELETE` query for multiple records:
+
+```haskell
+do
+    users :: [User] <- ...
+    deleteRecords users
+```
+
+This will execute:
+
+```sql
+DELETE FROM users WHERE id IN (...)
+```
+
+### Deleting All Records
+
+Use [`deleteAll`](https://ihp.digitallyinduced.com/api-docs/IHP-ModelSupport.html#v:deleteAll) to run a `DELETE` query for all rows in a table:
+
+```haskell
+do
+    deleteAll @User
+```
+
+This will execute:
+
+```sql
+DELETE FROM users
+```

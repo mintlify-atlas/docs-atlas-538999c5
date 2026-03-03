@@ -1,0 +1,462 @@
+---
+title: IHP GraphQL API
+description: GraphQL API support for IHP applications
+---
+
+## Overview
+
+IHP GraphQL automatically generates a GraphQL API from your database schema. It compiles GraphQL queries into optimized PostgreSQL queries at runtime.
+
+**Key Features:**
+- Schema-driven GraphQL API generation
+- Automatic query compilation to SQL
+- Support for queries, mutations, and nested relationships
+- Type-safe query building
+
+## Installation
+
+Add `ihp-graphql` to your project's `default.nix`:
+
+```nix
+haskellDeps = p: with p; [
+    ihp-graphql
+];
+```
+
+## Core Types
+
+### GraphQLRequest
+
+Represents a parsed GraphQL request:
+
+```haskell
+data GraphQLRequest = GraphQLRequest
+    { query :: !Document
+    , variables :: !Variables
+    }
+```
+
+### Document
+
+A GraphQL document containing definitions:
+
+```haskell
+newtype Document = Document { definitions :: [Definition] }
+
+data Definition
+    = ExecutableDefinition { operation :: !OperationDefinition }
+    | TypeSystemDefinition { typeSystemDefinition :: !TypeSystemDefinition }
+    | TypeSystemExtension
+    | FragmentDefinition !Fragment
+```
+
+### OperationDefinition
+
+Defines a GraphQL operation (query or mutation):
+
+```haskell
+data OperationDefinition = OperationDefinition
+    { operationType :: !OperationType
+    , name :: !(Maybe Text)
+    , selectionSet :: ![Selection]
+    , variableDefinitions :: ![VariableDefinition]
+    }
+
+data OperationType
+    = Query
+    | Mutation
+    | Subscription
+```
+
+## Schema Compilation
+
+### sqlSchemaToGraphQLSchema
+
+Convert an IHP SQL schema to a GraphQL schema:
+
+```haskell
+sqlSchemaToGraphQLSchema :: SqlSchema -> GraphQLSchema
+```
+
+<ParamField path="statements" type="[Statement]">
+  List of SQL schema statements from your `Schema.sql`
+</ParamField>
+
+<ResponseField name="GraphQLSchema" type="[Definition]">
+  Generated GraphQL schema definitions including:
+  - Query type with fields for each table
+  - Mutation type with create/update/delete operations
+  - Object types for each table
+  - Input types for creating/updating records
+</ResponseField>
+
+**Example:**
+
+```haskell
+import IHP.GraphQL.SchemaCompiler
+import IHP.Postgres.Types
+
+let schema = sqlSchemaToGraphQLSchema sqlStatements
+-- Generates Query, Mutation, and object types
+```
+
+## Query Compilation
+
+### compileDocument
+
+Compile a GraphQL document to SQL queries:
+
+```haskell
+compileDocument :: Variables -> Document -> [(PG.Query, [PG.Action])]
+```
+
+<ParamField path="variables" type="Variables">
+  GraphQL query variables
+</ParamField>
+
+<ParamField path="document" type="Document">
+  Parsed GraphQL document
+</ParamField>
+
+<ResponseField name="queries" type="[(PG.Query, [PG.Action])]">
+  List of compiled SQL queries with parameters
+</ResponseField>
+
+**Example:**
+
+Given this GraphQL query:
+
+```graphql
+query {
+    projects {
+        id
+        title
+        tasks {
+            id
+            name
+        }
+    }
+}
+```
+
+Compiles to:
+
+```sql
+SELECT to_json(_root.data) FROM (
+    SELECT json_build_object('projects', json_agg(_projects.*))
+    FROM (
+        SELECT id, title, (
+            SELECT ARRAY(
+                SELECT to_json(_sub) FROM (
+                    SELECT id, name FROM tasks 
+                    WHERE tasks.project_id = projects.id
+                ) AS _sub
+            ) AS tasks
+        )
+        FROM projects
+    ) AS _projects
+) AS _root
+```
+
+## Generated Schema
+
+### Query Type
+
+For each table, a query field is generated:
+
+```graphql
+type Query {
+    """Returns all records from the `projects` table"""
+    projects: [Project!]!
+    
+    tasks: [Task!]!
+    users: [User!]!
+}
+```
+
+### Object Types
+
+Each table becomes a GraphQL object type:
+
+```graphql
+type Project {
+    id: ID!
+    title: String!
+    userId: ID!
+    createdAt: Timestamp!
+    
+    # Automatic relationship based on foreign keys
+    tasks: [Task!]!
+}
+
+type Task {
+    id: ID!
+    projectId: ID!
+    name: String!
+    isCompleted: Boolean!
+}
+```
+
+### Mutation Type
+
+CRUD operations for each table:
+
+```graphql
+type Mutation {
+    createProject(project: NewProject!): Project!
+    updateProject(id: ID!, patch: ProjectPatch!): Project!
+    deleteProject(id: ID!): Project!
+    
+    createTask(task: NewTask!): Task!
+    updateTask(id: ID!, patch: TaskPatch!): Task!
+    deleteTask(id: ID!): Task!
+}
+```
+
+### Input Types
+
+For creating new records:
+
+```graphql
+input NewProject {
+    title: String!
+    userId: ID!
+    # createdAt is optional (has default value)
+    createdAt: Timestamp
+}
+
+input NewTask {
+    projectId: ID!
+    name: String!
+    # isCompleted is optional (has default)
+    isCompleted: Boolean
+}
+```
+
+For updating records:
+
+```graphql
+input ProjectPatch {
+    title: String
+    userId: ID
+}
+
+input TaskPatch {
+    name: String
+    isCompleted: Boolean
+}
+```
+
+## Type Mapping
+
+PostgreSQL types map to GraphQL types:
+
+| PostgreSQL | GraphQL |
+|------------|----------|
+| `text`, `varchar` | `String` |
+| `uuid` (primary key) | `ID` |
+| `uuid` (other) | `UUID` (custom scalar) |
+| `int`, `int2`, `int4` | `Int` |
+| `int8` | `BigInt` |
+| `boolean` | `Boolean` |
+| `timestamp`, `timestamptz` | `Timestamp` (custom scalar) |
+| `real`, `double precision` | `Float` |
+| `numeric` | `Float` |
+| `date` | `Date` |
+| `time` | `Time` |
+| `jsonb` | `JSON` |
+| `inet` | `IPv4` |
+| `type[]` | `[Type]` |
+
+## Query Examples
+
+### Simple Query
+
+```graphql
+query {
+    projects {
+        id
+        title
+    }
+}
+```
+
+### Nested Relationships
+
+```graphql
+query {
+    projects {
+        id
+        title
+        tasks {
+            id
+            name
+            isCompleted
+        }
+    }
+}
+```
+
+### Query with Variables
+
+```graphql
+query GetProject($projectId: ID!) {
+    projects(id: $projectId) {
+        id
+        title
+        tasks {
+            name
+        }
+    }
+}
+```
+
+Variables:
+```json
+{
+    "projectId": "df1f54d5-ced6-4f65-8aea-fcd5ea6b9df1"
+}
+```
+
+### Field Aliases
+
+```graphql
+query {
+    projects {
+        projectId: id
+        projectName: title
+    }
+}
+```
+
+## Mutation Examples
+
+### Create Record
+
+```graphql
+mutation CreateProject($project: NewProject!) {
+    createProject(project: $project) {
+        id
+        title
+    }
+}
+```
+
+Variables:
+```json
+{
+    "project": {
+        "title": "New Project",
+        "userId": "dc984c2f-d91c-4143-9091-400ad2333f83"
+    }
+}
+```
+
+Compiles to:
+```sql
+INSERT INTO projects (title, user_id)
+VALUES ($1, $2)
+RETURNING json_build_object('id', projects.id, 'title', projects.title)
+```
+
+### Update Record
+
+```graphql
+mutation UpdateProject($id: ID!, $patch: ProjectPatch!) {
+    updateProject(id: $id, patch: $patch) {
+        id
+        title
+    }
+}
+```
+
+Variables:
+```json
+{
+    "id": "df1f54d5-ced6-4f65-8aea-fcd5ea6b9df1",
+    "patch": {
+        "title": "Updated Title"
+    }
+}
+```
+
+Compiles to:
+```sql
+UPDATE projects
+SET title = $2
+WHERE id = $1
+RETURNING json_build_object('id', projects.id, 'title', projects.title)
+```
+
+### Delete Record
+
+```graphql
+mutation DeleteProject($id: ID!) {
+    deleteProject(id: $id) {
+        id
+        title
+    }
+}
+```
+
+Compiles to:
+```sql
+DELETE FROM projects
+WHERE id = $1
+RETURNING json_build_object('id', projects.id, 'title', projects.title)
+```
+
+## Fragments
+
+Define reusable field selections:
+
+```graphql
+fragment ProjectFields on Project {
+    id
+    title
+    createdAt
+}
+
+query {
+    projects {
+        ...ProjectFields
+        tasks {
+            id
+            name
+        }
+    }
+}
+```
+
+## Best Practices
+
+1. **Use variables for dynamic values**:
+   ```graphql
+   # Good
+   query GetProject($id: ID!) {
+       projects(id: $id) { ... }
+   }
+   
+   # Avoid hardcoding
+   query {
+       projects(id: "abc-123") { ... }
+   }
+   ```
+
+2. **Request only needed fields**: GraphQL compiles to optimized SQL based on requested fields
+
+3. **Leverage relationships**: Foreign keys automatically create GraphQL relationships
+
+4. **Use fragments for reusable selections**: Reduces duplication in complex queries
+
+## Limitations
+
+- No support for pagination arguments (use SQL views or custom resolvers)
+- No filtering/sorting arguments on queries (use SQL views)
+- Subscriptions not yet implemented
+- Custom scalars limited to UUID and Timestamp
+
+## See Also
+
+- [GraphQL Specification](https://spec.graphql.org/)
+- [IHP Schema Designer](/database/schema-design)
