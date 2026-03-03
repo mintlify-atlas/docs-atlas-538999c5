@@ -1,0 +1,153 @@
+{
+  "projectType": "framework",
+  "projectName": "IHP",
+  "projectDescription": "Batteries-included Haskell web framework optimized for rapid development and type-safe applications",
+  "theme": "aspen",
+  "primaryColor": "#E85D30",
+  "lightColor": "#F59E0B",
+  "darkColor": "#C2410C",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart",
+              "your-first-project"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "architecture",
+              "routing",
+              "controllers",
+              "views",
+              "hsx"
+            ]
+          },
+          {
+            "group": "Database",
+            "pages": [
+              "database/overview",
+              "database/schema-design",
+              "database/queries",
+              "database/relationships",
+              "database/migrations"
+            ]
+          },
+          {
+            "group": "Frontend",
+            "pages": [
+              "frontend/forms",
+              "frontend/validation",
+              "frontend/auto-refresh",
+              "frontend/assets",
+              "frontend/tailwindcss"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/authentication",
+              "features/authorization",
+              "features/file-storage",
+              "features/mail",
+              "features/jobs",
+              "features/websockets",
+              "features/session"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/configuration",
+              "advanced/testing",
+              "advanced/deployment",
+              "advanced/realtime-spas",
+              "advanced/server-side-components"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/graphql",
+              "integrations/openai",
+              "integrations/stripe",
+              "integrations/oauth"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "resources/naming-conventions",
+              "resources/helpful-tips",
+              "resources/troubleshooting",
+              "resources/examples"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Modules",
+            "pages": [
+              "api/prelude",
+              "api/controller-support",
+              "api/view-support",
+              "api/query-builder"
+            ]
+          },
+          {
+            "group": "Extensions",
+            "pages": [
+              "api/datasync",
+              "api/graphql",
+              "api/openai",
+              "api/typed-sql"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Type-safe web development with Haskell",
+    "HSX templating (JSX-like syntax for HTML)",
+    "Built-in IDE with visual schema designer",
+    "Live reloading development server",
+    "Auto-refresh for real-time view updates",
+    "Integrated PostgreSQL with type-safe queries",
+    "Built-in authentication and authorization",
+    "Background job queue and processing",
+    "File storage with multiple backends",
+    "WebSocket and real-time features",
+    "Nix-based reproducible development environment"
+  ],
+  "publicApiSurface": [
+    "IHP.Prelude - Core Haskell utilities and re-exports",
+    "IHP.ControllerPrelude - Controller helpers and imports",
+    "IHP.ViewPrelude - View rendering and HSX",
+    "IHP.RouterSupport - Type-safe routing",
+    "IHP.QueryBuilder - Type-safe SQL query builder",
+    "IHP.ModelSupport - Database model operations",
+    "IHP.AuthSupport.Authentication - User authentication",
+    "IHP.AuthSupport.Authorization - Access control",
+    "IHP.ValidationSupport - Form validation",
+    "IHP.FileStorage - File upload and storage",
+    "IHP.Job.Queue - Background job processing",
+    "IHP.Mail - Email composition and sending",
+    "IHP.AutoRefresh - Real-time view updates",
+    "IHP.WebSocket - WebSocket support",
+    "IHP.DataSync - Real-time data synchronization",
+    "IHP.GraphQL - GraphQL API support",
+    "ihp-new - CLI tool to create new projects",
+    "devenv up - Start development server"
+  ]
+}
