@@ -1,0 +1,403 @@
+---
+title: Recipes
+description: Best-practice solutions to common web development tasks in IHP
+---
+
+This section provides proven solutions to common tasks you'll encounter when building web applications with IHP.
+
+## Static Pages
+
+Create SEO-friendly URLs for static pages like "About" or "Terms of Service":
+
+<Steps>
+  <Step title="Define the controller">
+    In `Web.Types`:
+
+    ```haskell
+    data StaticController
+        = AboutAction
+        | TermsAction
+        deriving (Eq, Show, Data)
+    ```
+  </Step>
+
+  <Step title="Implement the actions">
+    In `Web.Controller.Static`:
+
+    ```haskell
+    module Web.Controller.Static where
+
+    import Web.Controller.Prelude
+    import Web.View.Static.Terms
+    import Web.View.Static.About
+
+    instance Controller StaticController where
+        action TermsAction = render TermsView
+        action AboutAction = render AboutView
+    ```
+  </Step>
+
+  <Step title="Customize routing">
+    In `Web.Routes`, delete `instance AutoRoute StaticController` and add:
+
+    ```haskell
+    instance HasPath StaticController where
+        pathTo TermsAction = "/terms"
+        pathTo AboutAction = "/about"
+
+    instance CanRoute StaticController where
+        parseRoute' =
+            (string "/terms" <* endOfInput >> pure TermsAction)
+            <|> (string "/about" <* endOfInput >> pure AboutAction)
+    ```
+  </Step>
+
+  <Step title="Register in FrontController">
+    In `Web.FrontController`:
+
+    ```haskell
+    instance FrontController WebApplication where
+        controllers =
+            [ startPage HomeAction,
+              parseRoute @StaticController
+              -- Generator Marker
+            ]
+    ```
+  </Step>
+</Steps>
+
+Now `/terms` and `/about` work instead of `/Terms` and `/About`.
+
+## Upload Profile Picture
+
+Upload and process user profile pictures with ImageMagick:
+
+```haskell
+action UpdateUserAction { userId } = do
+    user <- fetch userId
+    accessDeniedWhen (userId /= currentUserId)
+
+    let profilePictureOptions = ImageUploadOptions
+            { convertTo = "jpg"
+            , imageMagickOptions = "-resize '1024x1024^' -gravity north -extent 1024x1024 -quality 85% -strip"
+            }
+
+    user
+        |> fill @["firstname", "lastname", "pictureUrl"]
+        |> uploadImageWithOptions profilePictureOptions #pictureUrl
+        >>= ifValid \case
+            Left user -> render EditView { .. }
+            Right user -> do
+                user <- user |> updateRecord
+                setSuccessMessage "Your changes have been saved."
+                redirectTo EditUserAction { .. }
+```
+
+<Note>
+Ensure `picture_url` is nullable in your schema. This gives `pictureUrl` a `Maybe Text` type for cases where no image is uploaded.
+</Note>
+
+In your view:
+
+```haskell
+renderForm :: User -> Html
+renderForm user = formFor user [hsx|
+    <div class="mb-3">
+        <label for="user_picture_url">
+            <img id="user_picture_url_preview" 
+                 src={user.pictureUrl} 
+                 style="width: 12rem" 
+                 class="img-thumbnail"/>
+            <input id="user_picture_url" 
+                   type="file" 
+                   name="pictureUrl" 
+                   class="form-control" 
+                   style="display: none" 
+                   data-preview="#user_picture_url_preview"/>
+        </label>
+    </div>
+    {textField #firstname}
+    {textField #lastname}
+    {submitButton}
+|]
+```
+
+## Permission Checks
+
+Check user permissions before allowing access:
+
+```haskell
+action EditPostAction { postId } = do
+    post <- fetch postId
+    -- Deny access if not the author
+    accessDeniedWhen (post.authorId /= currentUserId)
+    
+    renderHtml EditView { .. }
+```
+
+Or use the opposite:
+
+```haskell
+accessDeniedUnless (post.authorId == currentUserId)
+```
+
+Hide resources entirely with 404 instead of 403:
+
+```haskell
+notFoundWhen (post.authorId /= currentUserId)
+```
+
+## Custom Validators
+
+Create domain-specific validation logic:
+
+```haskell
+nonEmpty :: Text -> ValidatorResult
+nonEmpty "" = Failure "This field cannot be empty"
+nonEmpty _ = Success
+
+isAge :: Int -> ValidatorResult
+isAge = isInRange (0, 100)
+
+isPhoneNumber :: Text -> ValidatorResult
+isPhoneNumber phone
+    | length phone >= 10 = Success
+    | otherwise = Failure "Phone number must be at least 10 digits"
+```
+
+## Unique Email Validation
+
+Ensure emails are unique across users:
+
+```haskell
+user
+    |> fill @["email", "name"]
+    |> validateField #email nonEmpty
+    |> validateField #email isEmail
+    |> validateIsUnique #email
+    >>= ifValid \case
+        Left user -> render NewView { .. }
+        Right user -> do
+            createRecord user
+            redirectTo UsersAction
+```
+
+## Disable Auto-Open Browser
+
+Prevent the development server from automatically opening your browser:
+
+```bash
+export IHP_BROWSER=echo
+devenv up
+```
+
+## Working with UUIDs
+
+### Convert UUID to Id
+
+```haskell
+let myUUID = "ca63aace-af4b-4e6c-bcfa-76ca061dbdc6"
+let projectId = (Id myUUID) :: Id Project
+```
+
+### Convert Text/String to Id
+
+```haskell
+let myUUID :: Text = "ca63aace-af4b-4e6c-bcfa-76ca061dbdc6"
+let projectId = textToId myUUID
+```
+
+### Hard-coded Ids
+
+```haskell
+let projectId = "ca63aace-af4b-4e6c-bcfa-76ca061dbdc6" :: Id Project
+```
+
+## Dynamic Login/Logout Button
+
+Create a navbar that shows Login or Logout based on authentication status:
+
+```haskell
+navbar :: Html
+navbar = [hsx|
+<nav class="navbar navbar-expand-lg navbar-light bg-light">
+    <a class="navbar-brand" href="#">IHP Blog</a>
+    <div class="collapse navbar-collapse">
+        <ul class="navbar-nav me-auto">
+            <li class="nav-item">
+                <a class="nav-link" href={PostsAction}>Posts</a>
+            </li>
+        </ul>
+        {loginLogoutButton}
+    </div>
+</nav>
+|]
+    where
+        loginLogoutButton :: Html
+        loginLogoutButton =
+            case fromFrozenContext @(Maybe User) of
+                Just user -> [hsx|
+                    <a class="js-delete js-delete-no-confirm" href={DeleteSessionAction}>
+                        Logout
+                    </a>
+                |]
+                Nothing -> [hsx|
+                    <a href={NewSessionAction}>Login</a>
+                |]
+```
+
+## Make HTTP Requests
+
+Add `wreq` to your dependencies in `default.nix`:
+
+```nix
+haskellDeps = p: with p; [
+    cabal-install
+    base
+    wai
+    text
+    p.ihp
+    wreq  # Add this
+];
+```
+
+Import and use:
+
+```haskell
+import qualified Network.Wreq as Wreq
+import Control.Lens ((^.))
+
+fetchWebPage :: Text -> IO ()
+fetchWebPage url = do
+    response <- Wreq.get (cs url)
+    let body = response ^. Wreq.responseBody
+    renderPlain (cs body)
+```
+
+## Confirm Before Action
+
+Add confirmation dialog to links:
+
+```haskell
+[hsx|
+    <a href={DeletePostAction postId} 
+       onclick="if (!confirm('Really delete?')) event.preventDefault();">
+        Delete Post
+    </a>
+|]
+```
+
+## Generate Random Tokens
+
+Create secure tokens for authentication or password resets:
+
+```haskell
+import IHP.AuthSupport.Authentication
+
+do
+    token <- generateAuthenticationToken
+    -- token = "11D3OAbUfL0P9KNJ09VcUfCO0S9RwI"
+```
+
+## Get All Enum Values
+
+Retrieve all values of an enum type:
+
+```sql
+-- In Schema.sql
+CREATE TYPE colors AS ENUM ('yellow', 'red', 'blue');
+```
+
+```haskell
+let allColors = allEnumValues @Color
+-- allColors = [Yellow, Red, Blue]
+```
+
+Also works with Haskell enums:
+
+```haskell
+data Color = Yellow | Red | Blue deriving (Enum)
+
+let allColors = allEnumValues @Color
+-- allColors = [Yellow, Red, Blue]
+```
+
+## Add Current Year to Footer
+
+Display dynamic copyright year:
+
+```haskell
+-- In FrontController.hs
+instance InitControllerContext WebApplication where
+    initContext = do
+        currentTime <- getCurrentTime
+        setLayout (defaultLayout currentTime)
+
+-- In Layout.hs
+defaultLayout :: UTCTime -> Html -> Html
+defaultLayout currentTime inner = [hsx|
+<!DOCTYPE html>
+<html>
+    <body>
+        {inner}
+        {footer currentTime}
+    </body>
+</html>
+|]
+
+footer :: UTCTime -> Html
+footer currentTime = [hsx|
+    <footer>
+        © All Rights Reserved {formatTime defaultTimeLocale "%Y" currentTime}
+    </footer>
+|]
+```
+
+## Custom Favicon
+
+Add favicon to your layout:
+
+```haskell
+metaTags :: Html
+metaTags = [hsx|
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    
+    <link rel="shortcut icon" type="image/x-icon" href="/icon.svg"/>
+|]
+```
+
+## Highlight Targeted Element
+
+When linking to anchors like `#comment-123`, highlight the target:
+
+```javascript
+// app.js
+$(document).on('ready turbolinks:load', function () {
+    const prevMarked = document.querySelector('.hash-target');
+    if (prevMarked) {
+        prevMarked.classList.remove('hash-target');
+    }
+    if (location.hash) {
+        const marked = document.querySelector(location.hash);
+        if (marked) {
+            marked.classList.add('hash-target');
+        }
+    }
+});
+```
+
+```css
+/* app.css */
+.hash-target {
+    box-shadow: #ffe988 0px 0px 0px 3px;
+}
+```
+
+## See Also
+
+- [Database Queries](/database/queries) - Query patterns
+- [Validation](/frontend/validation) - Form validation
+- [Authentication](/features/authentication) - User auth
+- [File Storage](/features/file-storage) - File uploads
+- [Helpful Tips](/resources/helpful-tips) - More Haskell tips

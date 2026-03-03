@@ -81,6 +81,8 @@
               "advanced/configuration",
               "advanced/testing",
               "advanced/deployment",
+              "advanced/scripts",
+              "advanced/logging",
               "advanced/realtime-spas",
               "advanced/server-side-components"
             ]
@@ -99,6 +101,7 @@
             "pages": [
               "resources/naming-conventions",
               "resources/helpful-tips",
+              "resources/recipes",
               "resources/troubleshooting",
               "resources/examples"
             ]

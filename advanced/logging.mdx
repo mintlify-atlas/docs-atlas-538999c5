@@ -1,0 +1,268 @@
+---
+title: Logging
+description: Configure and use IHP's multi-threaded logging system for debugging and monitoring
+---
+
+IHP applications and the framework itself can log output using the `IHP.Log` module. The logging system is multi-threaded for optimal performance.
+
+<Note>
+Since the logging system is multi-threaded, messages may not be printed in order. Rely on timestamps for exact ordering.
+</Note>
+
+## Log Levels
+
+IHP uses log levels to control which messages are printed. This allows you to log helpful development messages without flooding production logs.
+
+Available log levels (in order of severity):
+- `debug` - Detailed diagnostic information
+- `info` - General informational messages
+- `warn` - Warning messages
+- `error` - Error conditions
+- `fatal` - Critical failures
+- `unknown` - Unclassified messages
+
+**Default levels:**
+- Development: `debug` (all messages shown)
+- Production: `info` (info and above shown)
+
+Messages are only output if their level is greater than or equal to the logger's configured level.
+
+## Logging Messages
+
+Import the logging module qualified:
+
+```haskell
+import qualified IHP.Log as Log
+```
+
+Use the log level functions in your controllers or models:
+
+```haskell
+action TopPerformancesAction {collection} = do
+    Log.debug "starting TopPerformancesAction"
+    let n = paramOrDefault 5 "numPerformances"
+    
+    band <- fetchBand collection
+    topPerformances <- fetchTopPerformances collection n
+    
+    Log.debug $ show (length topPerformances) <> " top performances received."
+    whenEmpty topPerformances $ Log.warn "No performances found! Something might be wrong"
+    
+    render TopPerformancesView {..}
+```
+
+## Configuration
+
+Configure the logger in `Config/Config.hs`:
+
+```haskell
+import qualified IHP.Log as Log
+import IHP.Log.Types
+
+config :: ConfigBuilder
+config = do
+    -- Create a logger with custom settings
+    logger <- liftIO $ newLogger def {
+        level = Debug,
+        formatter = withTimeFormatter
+    }
+    option logger
+```
+
+### Logger Settings
+
+The `LoggerSettings` record has these fields:
+
+```haskell
+data LoggerSettings = LoggerSettings {
+    level       :: LogLevel,      -- Minimum level to log
+    formatter   :: LogFormatter,  -- How to format messages
+    destination :: LogDestination, -- Where to send logs
+    timeFormat  :: TimeFormat     -- Timestamp format string
+}
+```
+
+### Log Formatters
+
+IHP ships with four built-in formatters:
+
+<Tabs>
+  <Tab title="Default">
+    ```haskell
+    formatter = defaultFormatter
+    ```
+    Output: `Server started`
+  </Tab>
+  <Tab title="With Time">
+    ```haskell
+    formatter = withTimeFormatter
+    ```
+    Output: `[28-Jan-2021 10:07:58] Server started`
+  </Tab>
+  <Tab title="With Level">
+    ```haskell
+    formatter = withLevelFormatter
+    ```
+    Output: `[INFO] Server started`
+  </Tab>
+  <Tab title="Time & Level">
+    ```haskell
+    formatter = withTimeAndLevelFormatter
+    ```
+    Output: `[INFO] [28-Jan-2021 10:07:58] Server started`
+  </Tab>
+</Tabs>
+
+### Custom Formatter
+
+Create your own formatter as a function:
+
+```haskell
+type LogFormatter = FormattedTime -> LogLevel -> Text -> Text
+
+-- Custom formatter example
+myFormatter :: LogFormatter
+myFormatter time level msg =
+    "[" <> toUpper (show level) <> "]"
+    <> "[" <> time <> "] "
+    <> toUpper msg <> " :) \n"
+```
+
+Output: `[INFO] [28-Jan-2021 10:07:58] SERVER STARTED :)`
+
+## Log Destinations
+
+Control where log messages are sent:
+
+```haskell
+data LogDestination
+    = None                                    -- Disable logging
+    | Stdout BufSize                          -- Standard output
+    | Stderr BufSize                          -- Standard error
+    | File FilePath RotateSettings BufSize   -- File with rotation
+    | Callback (LogStr -> IO ()) (IO ())     -- Custom callback
+```
+
+### Logging to Files
+
+<Tabs>
+  <Tab title="No Rotation">
+    ```haskell
+    logger <- liftIO $ newLogger def {
+        destination = File "Log/production.log" NoRotate defaultBufSize
+    }
+    ```
+    
+    <Warning>
+    Without rotation, log files can grow arbitrarily large. Use with caution.
+    </Warning>
+  </Tab>
+  
+  <Tab title="Size-Based Rotation">
+    ```haskell
+    logger <- liftIO $ newLogger def {
+        destination = File "Log/production.log" 
+                          (SizeRotate (Bytes (4 * 1024 * 1024)) 7) 
+                          defaultBufSize
+    }
+    ```
+    
+    Rotates after 4MB, keeps 7 files.
+  </Tab>
+  
+  <Tab title="Time-Based Rotation">
+    ```haskell
+    let
+        filePath = "Log/production.log"
+        formatString = "%FT%H%M%S"
+        timeCompare = (==) `on` (C8.takeWhile (/= 'T'))
+        compressFile fp = void . forkIO $
+            callProcess "tar" ["--remove-files", "-caf", fp <> ".gz", fp]
+    in
+        newLogger def {
+            destination = File filePath 
+                              (TimedRotate formatString timeCompare compressFile) 
+                              defaultBufSize
+        }
+    ```
+    
+    Rotates daily and compresses old logs.
+  </Tab>
+</Tabs>
+
+### Timestamp Format
+
+Configure the timestamp format using [strptime format strings](https://man7.org/linux/man-pages/man3/strptime.3.html):
+
+```haskell
+logger <- liftIO $ newLogger def {
+    timeFormat = "%A, %Y-%m-%d %H:%M:%S"
+}
+```
+
+Output: `Sunday, 2020-01-31 22:10:21`
+
+## Decorating Logs with User ID
+
+Add contextual information like user IDs to all log messages:
+
+```haskell
+-- Web/FrontController.hs
+
+import IHP.Log.Types as Log
+import IHP.Controller.Context
+
+instance InitControllerContext WebApplication where
+    initContext = do
+        initAuthentication @User
+        -- ... your other initContext code
+        
+        putContext userIdLogger
+
+userIdLogger :: (?context :: ControllerContext) => Logger
+userIdLogger =
+    defaultLogger { Log.formatter = userIdFormatter defaultLogger.formatter }
+    where
+        defaultLogger = ?context.frameworkConfig.logger
+
+userIdFormatter :: (?context :: ControllerContext) => Log.LogFormatter -> Log.LogFormatter
+userIdFormatter existingFormatter time level string =
+    existingFormatter time level (prependUserId string)
+
+prependUserId :: (?context :: ControllerContext) => LogStr -> LogStr
+prependUserId string =
+    toLogStr $ userInfo <> show string
+    where
+        userInfo =
+            case currentUserOrNothing of
+                Just currentUser -> "Authenticated user ID: " <> show currentUser.id <> " "
+                Nothing -> "Anonymous user: "
+```
+
+Now log messages include user context:
+
+```haskell
+action PostsAction = do
+    Log.debug ("This log message should have user info" :: Text)
+    -- Rest of the action code
+```
+
+Output:
+```
+[30-Mar-2024 18:28:29] Authenticated user ID: 5f32a9e3-da09-48d8-9712-34c935a72c7a "This log message should have user info"
+```
+
+## Best Practices
+
+1. **Use appropriate log levels** - Don't use `debug` for production-critical messages
+2. **Include context** - Add relevant IDs, timestamps, or state information
+3. **Avoid logging sensitive data** - Never log passwords, tokens, or personal information
+4. **Structure your messages** - Use consistent formatting for easier parsing
+5. **Monitor in production** - Set up log aggregation and alerting
+
+## See Also
+
+- [Configuration](/advanced/configuration) - Framework configuration options
+- [Scripts](/advanced/scripts) - Add logging to standalone scripts
+- [Haddock: IHP.Log](https://ihp.digitallyinduced.com/api-docs/IHP-Log.html)
+- [Haddock: IHP.Log.Types](https://ihp.digitallyinduced.com/api-docs/IHP-Log-Types.html)

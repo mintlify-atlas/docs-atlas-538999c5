@@ -1,0 +1,195 @@
+---
+title: Scripts
+description: Run standalone scripts inside the IHP framework context for cron jobs, data migrations, and background tasks
+---
+
+Scripts provide a way to run code inside the framework context, but outside of the usual web request/response lifecycle. They're perfect for cron jobs, one-off tasks, and administrative operations.
+
+## Common Use Cases
+
+- Sending periodic email reminders
+- Generating invoices
+- Data migrations and imports
+- Running as cronjobs
+- Background job-queue processing
+- Administrative tasks
+
+## Creating a New Script
+
+<Steps>
+  <Step title="Generate the script">
+    Use the built-in generator to create a new script:
+
+    ```bash
+    new-script HelloWorldToAllUsers
+    ```
+
+    This creates a file at `Application/Script/HelloWorldToAllUsers.hs`:
+
+    ```haskell
+    #!/usr/bin/env run-script
+    module Application.Script.HelloWorldToAllUsers where
+
+    import Application.Script.Prelude
+
+    run :: Script
+    run = do
+        -- Your script logic here
+    ```
+  </Step>
+
+  <Step title="Implement your logic">
+    The `run` function is your entry point. You can use all framework functions - database queries, email sending, view rendering, etc.
+
+    ```haskell
+    #!/usr/bin/env run-script
+    module Application.Script.HelloWorldToAllUsers where
+
+    import Application.Script.Prelude
+
+    run :: Script
+    run = do
+        users <- query @User |> fetch
+        forEach users \user -> do
+            putStrLn $ "Hello World, " <> user.firstname <> "!"
+    ```
+
+    This fetches all users and prints a greeting for each one.
+  </Step>
+</Steps>
+
+## Running Scripts
+
+### Local Development
+
+When running scripts locally, ensure the IHP server is running in the background with `devenv up`. Scripts use the same database connection and resources as your application.
+
+Scripts are executable by default thanks to the shebang line `#!/usr/bin/env run-script`:
+
+```bash
+./Application/Script/HelloWorldToAllUsers.hs
+```
+
+Output:
+```
+Hello World, Alice!
+Hello World, Bob!
+Hello World, Charlie!
+```
+
+<Note>
+If you get a permission error, add the executable flag: `chmod +x Application/Script/HelloWorldToAllUsers.hs`
+</Note>
+
+### Running from GHCI
+
+You can test scripts interactively in the REPL:
+
+```bash
+make ghci
+```
+
+Then load and run your script:
+
+```haskell
+:l Application.Script.TestScript
+runScript ihpDefaultConfig run
+```
+
+The `ihpDefaultConfig` is available from `Application.Script.Prelude` and provides default configuration. You can substitute it with custom configuration from `Config.hs`.
+
+### Custom Configuration
+
+Define custom configurations for different environments:
+
+```haskell
+-- Config.hs
+import qualified IHP.Log as Log
+import IHP.Log.Types
+
+testConfig :: ConfigBuilder
+testConfig = do
+    option Development
+    
+    logger <- liftIO $ newLogger def {
+        level = Debug,
+        formatter = withTimeAndLevelFormatter,
+        destination = File "Log/App.log" (SizeRotate (Bytes (4 * 1024 * 1024)) 4) defaultBufSize
+    }
+    option logger
+```
+
+Use it in your script:
+
+```haskell
+#!/usr/bin/env run-script
+module Application.Script.TestScript where
+
+import Application.Script.Prelude
+import Config
+
+run :: (?modelContext :: ModelContext, ?context :: FrameworkConfig) => IO ()
+run = do
+    user <- query @User 
+        |> filterWhere (#name, "Php") 
+        |> fetchOne
+    user 
+        |> set #name "IHP" 
+        |> updateRecord
+    pure ()
+```
+
+Run with custom config:
+
+```haskell
+IHP> :l Application.Script.TestScript
+IHP> runScript testConfig run
+```
+
+## Production Deployment
+
+### Building Scripts
+
+Build scripts to binaries for production use:
+
+```bash
+# Build all scripts along with the application
+nix build .#optimized-prod-server
+
+# Or for faster, unoptimized builds
+nix build .#unoptimized-prod-server
+```
+
+This produces binaries in `result/bin/`. A script at `Application/Script/HelloWorldToAllUsers.hs` becomes `result/bin/HelloWorldToAllUsers`.
+
+Run the compiled script:
+
+```bash
+result/bin/HelloWorldToAllUsers
+```
+
+### Scheduling with Cron
+
+Add scripts to your crontab for periodic execution:
+
+```cron
+# Run daily at 2 AM
+0 2 * * * /path/to/result/bin/SendDailyDigest
+
+# Run every hour
+0 * * * * /path/to/result/bin/ProcessQueue
+```
+
+## Best Practices
+
+1. **Keep scripts idempotent** - Scripts should be safe to run multiple times
+2. **Add logging** - Use `IHP.Log` to track script execution
+3. **Handle errors gracefully** - Catch exceptions and log failures
+4. **Test in development** - Use GHCI to test scripts before deployment
+5. **Monitor execution** - Track script runs in production logs
+
+## See Also
+
+- [Jobs](/features/jobs) - For recurring background tasks
+- [Logging](/advanced/logging) - Add logging to your scripts
+- [Configuration](/advanced/configuration) - Custom framework configuration
